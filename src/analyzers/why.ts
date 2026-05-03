@@ -37,38 +37,50 @@ export async function callAnalysisModel(
   config: AILensConfig
 ): Promise<string> {
   const apiKey = config.analysisApiKey!
+  const provider = config.analysisProvider ?? 'anthropic'
 
-  if (config.analysisProvider === 'openai') {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  // Anthropic native API
+  if (provider === 'anthropic') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: config.analysisModel ?? 'gpt-4o',
+        model: config.analysisModel ?? 'claude-sonnet-4-6',
         max_tokens: 800,
         messages: [{ role: 'user', content: prompt }],
       }),
     })
-    const data = await res.json() as { choices: Array<{ message: { content: string } }> }
-    return data.choices[0]?.message?.content ?? ''
+    const data = await res.json() as { content: Array<{ text: string }> }
+    return data.content[0]?.text ?? ''
   }
 
-  // Default: Anthropic
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  // OpenAI and any OpenAI-compatible provider (Groq, Ollama, Mistral, Together, Fireworks, etc.)
+  const baseURL = config.analysisBaseURL
+    ?? (provider === 'openai' ? 'https://api.openai.com/v1' : undefined)
+
+  if (!baseURL) {
+    throw new Error(
+      `analysisBaseURL is required when using provider "${provider}". ` +
+      `e.g. 'https://api.groq.com/openai/v1' or 'http://localhost:11434/v1'`
+    )
+  }
+
+  const res = await fetch(`${baseURL}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
+      'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: config.analysisModel ?? 'claude-sonnet-4-6',
+      model: config.analysisModel ?? 'gpt-4o',
       max_tokens: 800,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
-  const data = await res.json() as { content: Array<{ text: string }> }
-  return data.content[0]?.text ?? ''
+  const data = await res.json() as { choices: Array<{ message: { content: string } }> }
+  return data.choices[0]?.message?.content ?? ''
 }

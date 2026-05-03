@@ -5,8 +5,12 @@ export interface AILensConfig {
   analysisModel?: string
   /** API key for analysis model. Default: reads from env */
   analysisApiKey?: string
-  /** Which provider to use for analysis: 'anthropic' | 'openai' */
-  analysisProvider?: 'anthropic' | 'openai'
+  /** Which provider to use for analysis: 'anthropic' | 'openai' | 'openai-compatible' */
+  analysisProvider?: 'anthropic' | 'openai' | 'openai-compatible'
+  /** Base URL for OpenAI-compatible providers (Groq, Ollama, Mistral, Together, etc.)
+   *  e.g. 'https://api.groq.com/openai/v1' or 'http://localhost:11434/v1'
+   */
+  analysisBaseURL?: string
   /** Max log entries to keep per session. Default: 1000 */
   maxLogs?: number
   /** Whether to log to console as well. Default: false */

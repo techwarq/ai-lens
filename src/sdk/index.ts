@@ -21,6 +21,7 @@ export class AILens {
       analysisProvider: (process.env.AILENS_PROVIDER as AILensConfig['analysisProvider']) ?? 'anthropic',
       analysisModel: process.env.AILENS_MODEL,
       analysisApiKey: process.env.AILENS_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY,
+      analysisBaseURL: process.env.AILENS_BASE_URL,
       maxLogs: 1000,
       verbose: false,
       ...config,

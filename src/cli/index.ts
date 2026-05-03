@@ -40,7 +40,10 @@ EXAMPLES
 
 ENV VARS
   AILENS_API_KEY      API key for analysis (falls back to ANTHROPIC_API_KEY / OPENAI_API_KEY)
-  AILENS_PROVIDER     'anthropic' (default) or 'openai'
+  AILENS_PROVIDER     'anthropic' (default), 'openai', or 'openai-compatible'
+  AILENS_BASE_URL     Base URL for OpenAI-compatible providers
+                      e.g. https://api.groq.com/openai/v1
+                           http://localhost:11434/v1  (Ollama)
   AILENS_MODEL        Model to use for analysis
   AILENS_LOG_DIR      Log directory (default: .ailens)
 `
@@ -104,6 +107,7 @@ function loadConfig(): AILensConfig {
       ?? process.env.ANTHROPIC_API_KEY
       ?? process.env.OPENAI_API_KEY
       ?? saved.analysisApiKey,
+    analysisBaseURL: process.env.AILENS_BASE_URL ?? saved.analysisBaseURL,
     ...saved,
   }
 }
