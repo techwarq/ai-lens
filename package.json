@@ -1,0 +1,56 @@
+{
+  "name": "ailens",
+  "version": "0.1.0",
+  "description": "Developer toolkit that brings software engineering practices to AI apps — debug, diff, type-check, and auto-test your LLM calls",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "sideEffects": false,
+  "bin": {
+    "ailens": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli/index.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "author": "Sonali Nayak",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/techwarq/ai-lens.git"
+  },
+  "bugs": {
+    "url": "https://github.com/techwarq/ai-lens/issues"
+  },
+  "homepage": "https://github.com/techwarq/ai-lens#readme",
+  "keywords": [
+    "llm",
+    "ai",
+    "testing",
+    "debugging",
+    "prompts",
+    "observability",
+    "tracing",
+    "openai",
+    "anthropic",
+    "geval"
+  ],
+  "license": "MIT",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "tsx": "^4.0.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

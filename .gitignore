@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.ailens/sessions/
+.ailens/traces/
+*.env
+.env*
+*.log
+.DS_Store
