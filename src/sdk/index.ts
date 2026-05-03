@@ -371,9 +371,6 @@ export class AILens {
     rules: string[],
     context?: { input?: string; system?: string }
   ): Promise<CheckResult[]> {
-    if (!this.config.analysisApiKey) {
-      return rules.map(rule => ({ rule, passed: true, reason: 'no api key — skipped' }))
-    }
     const { gevalBatch } = await import('../analyzers/geval')
     return gevalBatch(output, rules, this.config, context)
   }

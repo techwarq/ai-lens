@@ -1,5 +1,5 @@
 {
-  "name": "ailens",
+  "name": "@techwarq/ailens",
   "version": "0.1.0",
   "description": "Developer toolkit that brings software engineering practices to AI apps — debug, diff, type-check, and auto-test your LLM calls",
   "main": "dist/index.js",
@@ -22,7 +22,7 @@
   "author": "Sonali Nayak",
   "repository": {
     "type": "git",
-    "url": "https://github.com/techwarq/ai-lens.git"
+    "url": "git+https://github.com/techwarq/ai-lens.git"
   },
   "bugs": {
     "url": "https://github.com/techwarq/ai-lens/issues"
