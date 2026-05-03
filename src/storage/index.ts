@@ -54,12 +54,21 @@ export class Storage {
 
   readSession(sessionId?: string): LensCall[] {
     const sid = sessionId ?? this.sessionId
-    const file = path.join(this.logDir, 'sessions', `${sid}.jsonl`)
-    if (!fs.existsSync(file)) return []
+    const file = this.resolveSessionFile(sid)
+    if (!file) return []
     return fs.readFileSync(file, 'utf-8')
       .split('\n')
       .filter(Boolean)
       .map(l => JSON.parse(l) as LensCall)
+  }
+
+  private resolveSessionFile(sid: string): string | null {
+    const exact = path.join(this.logDir, 'sessions', `${sid}.jsonl`)
+    if (fs.existsSync(exact)) return exact
+    const dir = path.join(this.logDir, 'sessions')
+    if (!fs.existsSync(dir)) return null
+    const match = fs.readdirSync(dir).find(f => f.startsWith(sid) && f.endsWith('.jsonl'))
+    return match ? path.join(dir, match) : null
   }
 
   listSessions(): string[] {
@@ -122,9 +131,18 @@ export class Storage {
   }
 
   readTrace(traceId: string): import('../types').Trace | null {
-    const file = path.join(this.logDir, 'traces', `${traceId}.json`)
-    if (!fs.existsSync(file)) return null
+    const file = this.resolveTraceFile(traceId)
+    if (!file) return null
     try { return JSON.parse(fs.readFileSync(file, 'utf-8')) } catch { return null }
+  }
+
+  private resolveTraceFile(traceId: string): string | null {
+    const exact = path.join(this.logDir, 'traces', `${traceId}.json`)
+    if (fs.existsSync(exact)) return exact
+    const dir = path.join(this.logDir, 'traces')
+    if (!fs.existsSync(dir)) return null
+    const match = fs.readdirSync(dir).find(f => f.startsWith(traceId) && f.endsWith('.json'))
+    return match ? path.join(dir, match) : null
   }
 
   readRecentTraces(limit = 20): import('../types').Trace[] {

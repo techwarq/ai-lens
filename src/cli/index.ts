@@ -48,7 +48,22 @@ ENV VARS
   AILENS_LOG_DIR      Log directory (default: .ailens)
 `
 
+function loadDotEnv(): void {
+  const envFile = path.join(process.cwd(), '.env')
+  if (!fs.existsSync(envFile)) return
+  for (const line of fs.readFileSync(envFile, 'utf-8').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq < 0) continue
+    const key = trimmed.slice(0, eq).trim()
+    const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '')
+    if (!(key in process.env)) process.env[key] = val
+  }
+}
+
 async function main() {
+  loadDotEnv()
   const args = process.argv.slice(2)
   const command = args[0]
 
@@ -333,7 +348,7 @@ async function runSessions(args: string[], config: AILensConfig) {
       : 'unknown'
     const badCount = calls.filter(c => c.feedback === 'bad').length
     const badStr = badCount > 0 ? ` (${badCount} bad)` : ''
-    console.log(`${sid.slice(0, 14)}  ${String(calls.length).padEnd(5)}  ${date}${badStr}`)
+    console.log(`${sid}  ${String(calls.length).padEnd(5)}  ${date}${badStr}`)
   }
 
   console.log()
@@ -403,12 +418,12 @@ async function runTraces(args: string[], config: AILensConfig) {
     return
   }
   console.log(`\nRecorded traces (${traces.length} total)\n`)
-  console.log('ID         NAME                      STEPS  TIME    STATUS')
-  console.log('─'.repeat(65))
+  console.log('ID                                    NAME                      STEPS  TIME    STATUS')
+  console.log('─'.repeat(90))
   for (const t of traces) {
     const status = t.success ? '✓' : '✗'
     const date = new Date(t.timestamp).toLocaleString()
-    console.log(`${t.id.slice(0, 8)}   ${t.name.padEnd(24)}  ${String(t.steps.length).padEnd(5)}  ${String(t.totalLatencyMs)+'ms'.padEnd(8)} ${status}  ${date}`)
+    console.log(`${t.id}  ${t.name.padEnd(24)}  ${String(t.steps.length).padEnd(5)}  ${String(t.totalLatencyMs)+'ms'.padEnd(8)} ${status}  ${date}`)
   }
   console.log()
   console.log(`Run 'npx ailens traces --show <id>' to inspect a trace`)
@@ -435,15 +450,17 @@ async function runInit(config: AILensConfig) {
   console.log()
   console.log('Next steps:')
   console.log(`  1. Set your API key: export ANTHROPIC_API_KEY=sk-...`)
-  console.log(`  2. Wrap your LLM calls with ailens:`)
+  console.log(`     (or add it to .env — ailens loads it automatically)`)
   console.log()
-  console.log(`     import { lens } from 'ailens'`)
+  console.log(`  2. Wrap your LLM calls:`)
+  console.log()
+  console.log(`     import { lens } from '@techwarq/ailens'`)
   console.log(`     const l = lens()`)
   console.log(`     const output = await l.run(prompt, () => myModel.call(prompt))`)
   console.log()
   console.log(`  3. Run your app, then:`)
-  console.log(`     npx ailens why`)
-  console.log(`     npx ailens diff --last`)
+  console.log(`     npx @techwarq/ailens why`)
+  console.log(`     npx @techwarq/ailens diff --last`)
 }
 
 function printInlineDiff(before: string, after: string) {

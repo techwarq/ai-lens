@@ -8,7 +8,12 @@ export async function analyzeWhy(
   const apiKey = config.analysisApiKey
   if (!apiKey) {
     throw new Error(
-      'No API key found. Set AILENS_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY'
+      '\nNo API key found for analysis.\n\n' +
+      'Set one of these in your environment or .env file:\n' +
+      '  ANTHROPIC_API_KEY=sk-ant-...   (default provider)\n' +
+      '  OPENAI_API_KEY=sk-...          (set AILENS_PROVIDER=openai)\n' +
+      '  AILENS_API_KEY=...             (any provider)\n\n' +
+      'Or configure in code: lens({ analysisApiKey: "..." })'
     )
   }
 
