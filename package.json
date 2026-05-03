@@ -1,6 +1,6 @@
 {
   "name": "@techwarq/ailens",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Developer toolkit that brings software engineering practices to AI apps — debug, diff, type-check, and auto-test your LLM calls",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
