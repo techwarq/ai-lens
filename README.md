@@ -2,6 +2,15 @@
 
 > Bring real software engineering to your AI app — debug, diff, type-check, and trace your LLM calls.
 
+[![npm](https://img.shields.io/npm/v/@techwarq/ailens)](https://www.npmjs.com/package/@techwarq/ailens)
+![license](https://img.shields.io/badge/license-MIT-blue)
+![logs](https://img.shields.io/badge/logs-local--first-green)
+![llms](https://img.shields.io/badge/works%20with-any%20LLM-purple)
+
+**any LLM · local-first · semantic checks · traces · session diff · zero config**
+
+[Install](#quick-start--2-lines) · [SDK](#sdk) · [CLI](#cli-commands) · [Traces](#ltracename-fn--multi-step-pipelines) · [Analysis model](#analysis-model--any-provider) · [Roadmap](#roadmap)
+
 ```bash
 npm install @techwarq/ailens
 ```
