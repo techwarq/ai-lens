@@ -3,8 +3,23 @@ import { Tracer } from './tracer'
 import { AILensConfig, LensCall, RunOptions, CheckResult } from '../types'
 import { Storage } from '../storage'
 import { AILensCheckError } from '../errors'
+import { resolveConfig } from '../config'
+import { pollUntilDone } from './poll'
 
 export { AILensCheckError }
+
+type MediaType = 'image' | 'video' | 'audio'
+
+interface ExecuteExtras {
+  system?: string
+  /** Extra metadata computed from the output (e.g. media URL) */
+  metaFromOutput?: (output: string) => Record<string, unknown>
+}
+
+/** Checks that should cause a throw, honouring the `checkErrors` setting. */
+export function blockingFailures(checks: CheckResult[], config: AILensConfig): CheckResult[] {
+  return checks.filter(c => !c.passed && !(c.error && config.checkErrors === 'ignore'))
+}
 
 export class AILens {
   private config: AILensConfig
@@ -12,23 +27,25 @@ export class AILens {
   private sessionId: string
 
   constructor(config: AILensConfig = {}) {
-    // Merge config with any saved config
     this.sessionId = crypto.randomUUID()
+    // Priority: code config > env vars > .ailens/config.json > defaults
+    this.config = resolveConfig(config)
+    this.storage = new Storage(this.config, this.sessionId)
+  }
 
-    // Load defaults from env
-    const resolved: AILensConfig = {
-      logDir: process.env.AILENS_LOG_DIR ?? '.ailens',
-      analysisProvider: (process.env.AILENS_PROVIDER as AILensConfig['analysisProvider']) ?? 'anthropic',
-      analysisModel: process.env.AILENS_MODEL,
-      analysisApiKey: process.env.AILENS_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY,
-      analysisBaseURL: process.env.AILENS_BASE_URL,
-      maxLogs: 1000,
-      verbose: false,
-      ...config,
-    }
-
-    this.config = resolved
-    this.storage = new Storage(resolved, this.sessionId)
+  /**
+   * Wrap any LLM call. Pass your prompt and a function that calls your model.
+   *
+   * @example
+   * const output = await lens.run(prompt, () => myLLM.call(prompt), { tag: 'summarizer' })
+   */
+  async run(
+    prompt: string,
+    fn: () => Promise<string>,
+    options: RunOptions = {}
+  ): Promise<string> {
+    const { output } = await this.execute(prompt, fn, options)
+    return output
   }
 
   /**
@@ -43,135 +60,7 @@ export class AILens {
     fn: () => Promise<string>,
     options: RunOptions = {}
   ): Promise<{ output: string; id: string }> {
-    const id = crypto.randomUUID()
-    const start = Date.now()
-
-    let output = ''
-    let error: Error | undefined
-
-    try {
-      output = await fn()
-    } catch (e) {
-      error = e as Error
-      output = `[ERROR] ${error.message}`
-    }
-
-    const latencyMs = Date.now() - start
-
-    let checks: CheckResult[] = []
-    if (options.check && options.check.length > 0 && !error) {
-      checks = await this.runChecks(output, options.check)
-    }
-
-    const call: LensCall = {
-      id,
-      timestamp: Date.now(),
-      prompt,
-      input: options.meta?.input,
-      output,
-      model: this.config.analysisModel ?? 'unknown',
-      provider: this.config.analysisProvider ?? 'unknown',
-      latencyMs,
-      tag: options.tag,
-      meta: options.meta,
-      feedback: options.feedback,
-      checks: checks.length > 0 ? checks : undefined,
-      sessionId: this.sessionId,
-    }
-
-    this.storage.append(call)
-
-    if (this.config.verbose) {
-      console.log(`[ailens] ${id} | ${latencyMs}ms | ${prompt.slice(0, 60)}...`)
-    }
-
-    if (options.check && checks.some(c => !c.passed)) {
-      const failed = checks.filter(c => !c.passed).map(c => c.rule)
-      throw new AILensCheckError(
-        `Output failed semantic checks:\n${failed.map(r => `  - ${r}`).join('\n')}`,
-        call,
-        checks
-      )
-    }
-
-    if (error) throw error
-
-    return { output, id }
-  }
-
-  /**
-   * Wrap any LLM call. Pass your prompt and a function that calls your model.
-   *
-   * @example
-   * const output = await lens.run(prompt, () => myLLM.call(prompt), { tag: 'summarizer' })
-   */
-  async run(
-    prompt: string,
-    fn: () => Promise<string>,
-    options: RunOptions = {}
-  ): Promise<string> {
-    const id = crypto.randomUUID()
-    const start = Date.now()
-
-    let output = ''
-    let error: Error | undefined
-
-    try {
-      output = await fn()
-    } catch (e) {
-      error = e as Error
-      output = `[ERROR] ${error.message}`
-    }
-
-    const latencyMs = Date.now() - start
-
-    // Run semantic checks if provided
-    let checks: CheckResult[] = []
-    if (options.check && options.check.length > 0 && !error) {
-      checks = await this.runChecks(output, options.check)
-    }
-
-    const call: LensCall = {
-      id,
-      timestamp: Date.now(),
-      prompt,
-      input: options.meta?.input,
-      output,
-      model: this.config.analysisModel ?? 'unknown',
-      provider: this.config.analysisProvider ?? 'unknown',
-      latencyMs,
-      tag: options.tag,
-      meta: options.meta,
-      feedback: options.feedback,
-      checks: checks.length > 0 ? checks : undefined,
-      sessionId: this.sessionId,
-    }
-
-    this.storage.append(call)
-
-    if (this.config.verbose) {
-      console.log(`[ailens] ${id} | ${latencyMs}ms | ${prompt.slice(0, 60)}...`)
-      if (checks.some(c => !c.passed)) {
-        console.warn(`[ailens] ⚠ Check failed for call ${id}`)
-        checks.filter(c => !c.passed).forEach(c => {
-          console.warn(`  ✗ ${c.rule}`)
-        })
-      }
-    }
-
-    // Throw if a semantic check failed (only if user explicitly wants enforcement)
-    if (options.check && checks.some(c => !c.passed)) {
-      const failed = checks.filter(c => !c.passed).map(c => c.rule)
-      throw new AILensCheckError(
-        `Output failed semantic checks:\n${failed.map(r => `  - ${r}`).join('\n')}`,
-        call,
-        checks
-      )
-    }
-
-    if (error) throw error
-
-    return output
+    return this.execute(prompt, fn, options)
   }
 
   /**
@@ -183,35 +72,18 @@ export class AILens {
     fn: () => Promise<string>,
     options: RunOptions = {}
   ): Promise<string> {
-    const id = crypto.randomUUID()
-    const start = Date.now()
-    const output = await fn()
-    const latencyMs = Date.now() - start
-
-    const call: LensCall = {
-      id,
-      timestamp: Date.now(),
-      prompt,
-      system,
-      output,
-      model: this.config.analysisModel ?? 'unknown',
-      provider: this.config.analysisProvider ?? 'unknown',
-      latencyMs,
-      tag: options.tag,
-      meta: options.meta,
-      feedback: options.feedback,
-      sessionId: this.sessionId,
-    }
-
-    this.storage.append(call)
+    const { output } = await this.execute(prompt, fn, options, { system })
     return output
   }
 
   /**
-   * Mark a previous output as good or bad — builds up your test suite
+   * Mark a previous output as good or bad — builds up your test suite.
+   * Works for calls from earlier sessions too. Returns false if the ID was not found.
    */
-  feedback(callId: string, value: 'good' | 'bad'): void {
-    this.storage.updateCall(callId, { feedback: value })
+  feedback(callId: string, value: 'good' | 'bad'): boolean {
+    const found = this.storage.updateCall(callId, { feedback: value })
+    if (!found) console.warn(`[ailens] feedback(): no logged call with id ${callId}`)
+    return found
   }
 
   /**
@@ -234,7 +106,7 @@ export class AILens {
    *
    * @example
    * const result = await l.trace('image-pipeline', async (t) => {
-   *   const refined = await t.run('refine-prompt', () => llm.refine(input))
+   *   const refined = await t.run('refine-prompt', input, () => llm.refine(input))
    *   const image   = await t.image('gen-image', refined, () => dalle.generate(refined))
    *   const video   = await t.runAsync('gen-video', refined,
    *     () => runway.submit(image),
@@ -253,21 +125,21 @@ export class AILens {
       console.log(`[ailens] starting trace: ${name} (${tracer.getTraceId().slice(0, 8)})`)
     }
 
-    let result: T
     try {
-      result = await fn(tracer)
+      const result = await fn(tracer)
+      tracer.finish(result)
       if (this.config.verbose) {
         const t = tracer.getTrace()
         console.log(`[ailens] trace complete: ${name} | ${t.steps.length} steps | ${t.totalLatencyMs}ms`)
       }
+      return result
     } catch (e) {
+      tracer.fail(e)
       if (this.config.verbose) {
         console.error(`[ailens] trace failed: ${name} — ${(e as Error).message}`)
       }
       throw e
     }
-
-    return result
   }
 
   /**
@@ -277,33 +149,12 @@ export class AILens {
   async runMedia(
     prompt: string,
     fn: () => Promise<string>,
-    options: RunOptions & { mediaType?: 'image' | 'video' | 'audio' } = {}
+    options: RunOptions & { mediaType?: MediaType } = {}
   ): Promise<string> {
-    const id = crypto.randomUUID()
-    const start = Date.now()
-    const output = await fn()
-    const latencyMs = Date.now() - start
-
-    const call: LensCall = {
-      id,
-      timestamp: Date.now(),
-      prompt,
-      output,
-      model: this.config.analysisModel ?? 'unknown',
-      provider: this.config.analysisProvider ?? 'unknown',
-      latencyMs,
-      tag: options.tag,
-      meta: { ...options.meta, mediaType: options.mediaType ?? 'image', mediaUrl: output },
-      feedback: options.feedback,
-      sessionId: this.sessionId,
-    }
-
-    this.storage.append(call)
-
-    if (this.config.verbose) {
-      console.log(`[ailens] media ${options.mediaType ?? 'image'} | ${latencyMs}ms | ${output.slice(0, 60)}`)
-    }
-
+    const mediaType = options.mediaType ?? 'image'
+    const { output } = await this.execute(prompt, fn, options, {
+      metaFromOutput: out => ({ mediaType, mediaUrl: out }),
+    })
     return output
   }
 
@@ -316,7 +167,7 @@ export class AILens {
     submitFn: () => Promise<string>,
     pollFn: (jobId: string) => Promise<string | null>,
     options: RunOptions & {
-      mediaType?: 'image' | 'video' | 'audio'
+      mediaType?: MediaType
       pollInterval?: number
       timeout?: number
     } = {}
@@ -327,44 +178,93 @@ export class AILens {
       mediaType = 'video',
     } = options
 
-    const id = crypto.randomUUID()
-    const start = Date.now()
     let jobId = ''
-    let result: string | null = null
-
-    jobId = await submitFn()
-
-    const deadline = start + timeout
-    while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, pollInterval))
-      result = await pollFn(jobId)
-      if (result !== null) break
-      if (this.config.verbose) {
-        console.log(`[ailens] polling ${mediaType} job ${jobId}... (${Math.round((Date.now() - start) / 1000)}s)`)
-      }
+    const job = async (): Promise<string> => {
+      jobId = await submitFn()
+      const result = await pollUntilDone(jobId, pollFn, pollInterval, timeout, elapsed => {
+        if (this.config.verbose) {
+          console.log(`[ailens] polling ${mediaType} job ${jobId}... (${Math.round(elapsed / 1000)}s)`)
+        }
+      })
+      if (result === null) throw new Error(`Timed out after ${timeout / 1000}s waiting for ${mediaType} job ${jobId}`)
+      return result
     }
 
-    const output = result ?? ''
+    const { output } = await this.execute(prompt, job, options, {
+      metaFromOutput: out => ({ jobId, mediaType, mediaUrl: out }),
+    })
+    return output
+  }
+
+  /** Shared implementation for every run* method: call, check, log, enforce. */
+  private async execute(
+    prompt: string,
+    fn: () => Promise<string>,
+    options: RunOptions,
+    extras: ExecuteExtras = {}
+  ): Promise<{ output: string; id: string }> {
+    const id = crypto.randomUUID()
+    const start = Date.now()
+
+    let output = ''
+    let error: Error | undefined
+
+    try {
+      output = await fn()
+    } catch (e) {
+      error = e instanceof Error ? e : new Error(String(e))
+      output = `[ERROR] ${error.message}`
+    }
+
     const latencyMs = Date.now() - start
+
+    let checks: CheckResult[] = []
+    if (options.check && options.check.length > 0 && !error) {
+      checks = await this.runChecks(output, options.check, { input: prompt, system: extras.system })
+    }
+
+    const extraMeta = !error && extras.metaFromOutput ? extras.metaFromOutput(output) : undefined
+    const meta = extraMeta ? { ...options.meta, ...extraMeta } : options.meta
 
     const call: LensCall = {
       id,
       timestamp: Date.now(),
       prompt,
+      ...(extras.system !== undefined ? { system: extras.system } : {}),
+      input: options.meta?.input,
       output,
-      model: this.config.analysisModel ?? 'unknown',
-      provider: this.config.analysisProvider ?? 'unknown',
+      model: options.model ?? 'unknown',
+      provider: options.provider ?? 'unknown',
       latencyMs,
       tag: options.tag,
-      meta: { ...options.meta, jobId, mediaType, mediaUrl: output },
+      meta,
       feedback: options.feedback,
+      checks: checks.length > 0 ? checks : undefined,
       sessionId: this.sessionId,
     }
 
     this.storage.append(call)
 
-    if (!result) throw new Error(`Timed out after ${timeout / 1000}s waiting for ${mediaType} job ${jobId}`)
-    return output
+    const failed = blockingFailures(checks, this.config)
+
+    if (this.config.verbose) {
+      console.log(`[ailens] ${id} | ${latencyMs}ms | ${prompt.slice(0, 60)}...`)
+      for (const c of checks.filter(c => !c.passed)) {
+        console.warn(`[ailens] ⚠ ${c.error ? 'check could not run' : 'check failed'}: ${c.rule}${c.error ? ` (${c.error})` : ''}`)
+      }
+    }
+
+    if (error) throw error
+
+    if (failed.length > 0) {
+      throw new AILensCheckError(
+        `Output failed semantic checks:\n${failed.map(c => `  - ${c.rule}${c.error ? ` (could not evaluate: ${c.error})` : ''}`).join('\n')}`,
+        call,
+        checks
+      )
+    }
+
+    return { output, id }
   }
 
   private async runChecks(
@@ -376,7 +276,6 @@ export class AILens {
     return gevalBatch(output, rules, this.config, context)
   }
 }
-
 
 // Convenience singleton factory
 let _default: AILens | null = null

@@ -56,9 +56,11 @@ Wrap any LLM call. Logs it and returns the output.
 const output = await l.run(
   'Summarize this article in one sentence.',
   () => openai.chat.completions.create({ ... }).then(r => r.choices[0].message.content!),
-  { tag: 'summarizer' }
+  { tag: 'summarizer', model: 'gpt-4o', provider: 'openai' }
 )
 ```
+
+`model` / `provider` are optional and record which model *your app* called, so logs and diffs can tell models apart.
 
 ### `l.runWithId(prompt, fn, options?)`
 
@@ -95,19 +97,26 @@ const output = await l.run(prompt, () => myModel.call(prompt), {
 // throws AILensCheckError if any check fails
 ```
 
-**Local checks** (no API needed):
-- `under N words` / `over N words`
-- `under N chars` / `over N chars`
+**Local checks** (no API needed). A rule runs locally only if the *whole* rule matches one of these forms (an optional `must` / `should` / `the output` prefix is allowed, and text matching is case-insensitive):
+- `under N words` / `over N words` (also `fewer than`, `more than`, `at most`, `at least`)
+- `under N chars` / `over N chars` (same comparisons)
 - `not empty`
 - `valid json`
 - `contains "text"`
-- `does not contain "text"`
-- `starts with "text"`
-- `ends with "text"`
+- `does not contain "text"` (also `must not contain "text"`)
+- `starts with "text"` / `does not start with "text"`
+- `ends with "text"` / `does not end with "text"`
 - `no urls`
 
 **Semantic checks** (LLM judge, uses your configured analysis model):
-- Any plain-english rule that doesn't match the above patterns
+- Any other plain-english rule, including compound ones like `"under 50 words unless the user asks for detail"`
+- The judge sees the prompt (and system prompt) as context, so rules like `"answers the question"` work
+
+**If a semantic check can't run** (no API key, network/HTTP error, bad judge response), it is **never** reported as passing. It gets `passed: false` and an `error` message. By default `run()` then throws `AILensCheckError`. If you'd rather not block on judge outages, set `checkErrors: 'ignore'`: the error is still logged on the call, but `run()` won't throw because of it.
+
+```ts
+const l = lens({ checkErrors: 'ignore' })  // default: 'fail'
+```
 
 Catching a failed check:
 
@@ -118,7 +127,7 @@ try {
   const output = await l.run(prompt, fn, { check: ['under 50 words'] })
 } catch (e) {
   if (e instanceof AILensCheckError) {
-    console.log(e.checks) // array of { rule, passed, reason }
+    console.log(e.checks) // array of { rule, passed, score?, reason?, error? }
   }
 }
 ```
@@ -130,7 +139,7 @@ Trace full agent pipelines, RAG chains, or image/video workflows. Every step is 
 ```ts
 const result = await l.trace('my-pipeline', async (t) => {
   // LLM step
-  const refined = await t.run('refine-prompt', () => llm.refine(input))
+  const refined = await t.run('refine-prompt', input, () => llm.refine(input))
 
   // Image generation
   const imageUrl = await t.image('gen-image', refined, () => dalle.generate(refined))
@@ -157,7 +166,7 @@ Each step type:
 
 | Method | Use for |
 |---|---|
-| `t.run(name, fn)` | LLM text generation |
+| `t.run(name, prompt, fn)` | LLM text generation (the prompt is recorded so `traces why` can see it; `t.run(name, fn)` also works) |
 | `t.image(name, prompt, fn)` | Image generation (DALL-E, Stability, etc.) |
 | `t.video(name, prompt, fn)` | Synchronous video gen |
 | `t.runAsync(name, prompt, submitFn, pollFn)` | Async video gen (Runway, Sora, Kling) |
@@ -497,7 +506,9 @@ Creates `.ailens/config.json`:
 }
 ```
 
-Config priority: **code config > env vars > config.json**
+Config priority: **code config > env vars > config.json** (the SDK and the CLI both follow this order).
+
+`init` won't overwrite an existing `config.json`. Pass `--force` to replace it.
 
 ---
 
@@ -531,7 +542,7 @@ const l = lens(config?)               // create a lens instance
 l.run(prompt, fn, options?)           // wrap an LLM call
 l.runWithId(prompt, fn, options?)     // same, returns { output, id }
 l.runWithSystem(system, prompt, fn)   // track system prompt separately
-l.feedback(id, 'good' | 'bad')        // mark a call
+l.feedback(id, 'good' | 'bad')        // mark a call (any session); returns false if id not found
 l.trace(name, fn)                     // run a multi-step pipeline
 l.runMedia(prompt, fn, options?)      // single media generation call
 l.runAsync(prompt, submitFn, pollFn)  // async media generation (polling)
@@ -546,6 +557,8 @@ l.getSessionId()                      // get current session ID
   meta?: Record<string, any>    // arbitrary metadata
   check?: string[]              // semantic rules to enforce
   feedback?: 'good' | 'bad'     // mark immediately on creation
+  model?: string                // the model your app called (logged)
+  provider?: string             // the provider your app called (logged)
 }
 ```
 

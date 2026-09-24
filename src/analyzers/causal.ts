@@ -1,5 +1,5 @@
 import { LensCall, WhyResult, AILensConfig } from '../types'
-import { callAnalysisModel } from './why'
+import { callAnalysisModel, parseJsonResponse, fence } from './llm'
 
 /**
  * Causal chain analysis for aiwhy.
@@ -47,12 +47,14 @@ export async function analyzeCausalChain(
     ? `SYSTEM: ${call.system}\n\nUSER: ${call.prompt}`
     : call.prompt
 
-  const failedChecks = call.checks?.filter(c => !c.passed) ?? []
+  const failedChecks = call.checks?.filter(c => !c.passed && !c.error) ?? []
   const failureContext = failedChecks.length > 0
-    ? `Failed checks:\n${failedChecks.map(c => `- ${c.rule}: ${c.reason}`).join('\n')}`
-    : call.feedback === 'bad'
-      ? 'User marked this output as bad.'
-      : 'Output appears problematic.'
+    ? `Failed checks:\n${failedChecks.map(c => `- ${c.rule}: ${c.reason ?? ''}`).join('\n')}`
+    : call.output.startsWith('[ERROR]')
+      ? 'The model call threw an error.'
+      : call.feedback === 'bad'
+        ? 'User marked this output as bad.'
+        : 'Output appears problematic.'
 
   // Step 1: Extract semantic spans from the prompt
   const spans = await extractPromptSpans(fullPrompt, config)
@@ -97,9 +99,7 @@ async function extractPromptSpans(
     `Split this prompt into semantic spans — distinct chunks that each serve a different purpose.`,
     ``,
     `Prompt:`,
-    `"""`,
-    prompt,
-    `"""`,
+    fence('prompt', prompt),
     ``,
     `Identify each span's type:`,
     `- instruction: tells the model what to do`,
@@ -118,11 +118,12 @@ async function extractPromptSpans(
   ].join('\n')
 
   try {
-    const text = await callAnalysisModel(extractPrompt, config)
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as {
+    const text = await callAnalysisModel(extractPrompt, config, { maxTokens: 2048 })
+    const parsed = parseJsonResponse(text) as {
       spans: Array<{ id: string; text: string; type: CausalSpan['type'] }>
     }
-    return parsed.spans ?? [{ id: 's0', text: prompt, type: 'instruction' }]
+    const spans = (parsed.spans ?? []).filter(sp => typeof sp?.id === 'string' && typeof sp?.text === 'string')
+    return spans.length > 0 ? spans : [{ id: 's0', text: prompt, type: 'instruction' }]
   } catch {
     return [{ id: 's0', text: prompt, type: 'instruction' }]
   }
@@ -148,9 +149,7 @@ async function scoreSpansForAgainst(
     failureContext,
     ``,
     `## Model output`,
-    `"""`,
-    output.slice(0, 500),
-    `"""`,
+    fence('output', output.slice(0, 1500)),
     ``,
     `## Prompt spans`,
     spanDescriptions,
@@ -174,8 +173,8 @@ async function scoreSpansForAgainst(
   ].join('\n')
 
   try {
-    const text = await callAnalysisModel(attributionPrompt, config)
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as {
+    const text = await callAnalysisModel(attributionPrompt, config, { maxTokens: 2048 })
+    const parsed = parseJsonResponse(text) as {
       attributions: Array<{
         id: string
         suspicionScore: number
@@ -185,10 +184,10 @@ async function scoreSpansForAgainst(
     }
 
     return spans.map(span => {
-      const attr = parsed.attributions.find(a => a.id === span.id)
+      const attr = (parsed.attributions ?? []).find(a => a.id === span.id)
       return {
         ...span,
-        suspicionScore: attr?.suspicionScore ?? 0,
+        suspicionScore: clamp01(attr?.suspicionScore),
         forEvidence: attr?.forEvidence ?? [],
         againstEvidence: attr?.againstEvidence ?? [],
       }
@@ -210,10 +209,11 @@ async function synthesizeRootCause(
   failureContext: string,
   config: AILensConfig
 ): Promise<CausalChain> {
-  // Find the most suspicious span
-  const rootCause = spans.length > 0
-    ? spans.reduce((a, b) => a.suspicionScore > b.suspicionScore ? a : b)
+  // Find the most suspicious span — none if attribution produced no signal
+  const top = spans.length > 0
+    ? spans.reduce((a, b) => a.suspicionScore >= b.suspicionScore ? a : b)
     : null
+  const rootCause = top && top.suspicionScore > 0 ? top : null
 
   const rootCauseText = rootCause
     ? `Most suspicious span (score ${rootCause.suspicionScore.toFixed(2)}): "${rootCause.text.slice(0, 200)}"`
@@ -229,9 +229,7 @@ async function synthesizeRootCause(
     rootCauseText,
     ``,
     `## Output`,
-    `"""`,
-    output.slice(0, 400),
-    `"""`,
+    fence('output', output.slice(0, 1500)),
     ``,
     `Based on the causal analysis, provide:`,
     `1. A clear diagnosis (1 paragraph, what went wrong and why)`,
@@ -251,8 +249,8 @@ async function synthesizeRootCause(
   ].join('\n')
 
   try {
-    const text = await callAnalysisModel(synthesisPrompt, config)
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as {
+    const text = await callAnalysisModel(synthesisPrompt, config, { maxTokens: 1500 })
+    const parsed = parseJsonResponse(text) as {
       diagnosis: string
       promptIssues: string[]
       suggestedFix: string
@@ -264,22 +262,27 @@ async function synthesizeRootCause(
       spans,
       outputSpans: [],
       rootCause,
-      diagnosis: parsed.diagnosis,
-      promptIssues: parsed.promptIssues,
-      suggestedFix: parsed.suggestedFix,
-      severity: parsed.severity,
-      confidence: parsed.confidence ?? 0.7,
+      diagnosis: typeof parsed.diagnosis === 'string' ? parsed.diagnosis : '',
+      promptIssues: Array.isArray(parsed.promptIssues) ? parsed.promptIssues : [],
+      suggestedFix: typeof parsed.suggestedFix === 'string' ? parsed.suggestedFix : '',
+      severity: ['low', 'medium', 'high'].includes(parsed.severity) ? parsed.severity : 'medium',
+      // Self-reported by the analysis model — not a calibrated probability
+      confidence: clamp01(parsed.confidence),
     }
-  } catch {
+  } catch (e) {
     return {
       spans,
       outputSpans: [],
       rootCause,
-      diagnosis: 'Could not synthesize root cause.',
+      diagnosis: `Could not synthesize root cause: ${(e as Error).message.trim()}`,
       promptIssues: [],
       suggestedFix: '',
       severity: 'low',
       confidence: 0,
     }
   }
+}
+
+function clamp01(n: unknown): number {
+  return typeof n === 'number' && Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0
 }

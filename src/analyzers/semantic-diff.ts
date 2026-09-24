@@ -1,5 +1,5 @@
 import { LensCall, DiffResult, AILensConfig } from '../types'
-import { callAnalysisModel } from './why'
+import { callAnalysisModel, parseJsonResponse } from './llm'
 
 /**
  * Embedding-based semantic diff for aidiff.
@@ -21,11 +21,11 @@ interface EmbeddingVector {
   text: string
 }
 
-interface SemanticDistance {
+export interface SemanticDistance {
   cosineSimilarity: number    // 0-1, higher = more similar
   driftScore: number          // 0-1, higher = more behavioral change
   centroidDistance: number    // euclidean distance between cluster centroids
-  slices: SliceDrift[]        // per-category drift
+  method: 'openai-embeddings' | 'tfidf'
 }
 
 interface SliceDrift {
@@ -63,7 +63,7 @@ export async function analyzeDiffWithEmbeddings(
   }
 
   // Step 2: Classify outputs into slices for per-category drift
-  const slices = semanticDistance?.slices ?? await classifyOutputSlices(before, after, config)
+  const slices = await classifyOutputSlices(before, after, config)
 
   // Step 3: LLM explains the measured drift
   const analysis = await explainDrift(
@@ -84,7 +84,7 @@ export async function analyzeDiffWithEmbeddings(
   }
 }
 
-async function measureSemanticDistance(
+export async function measureSemanticDistance(
   before: LensCall[],
   after: LensCall[],
   config: AILensConfig
@@ -92,11 +92,11 @@ async function measureSemanticDistance(
   const beforeOutputs = before.slice(0, 10).map(c => c.output)
   const afterOutputs = after.slice(0, 10).map(c => c.output)
 
-  // Get embeddings from the provider
-  const [beforeEmbeddings, afterEmbeddings] = await Promise.all([
-    embedTexts(beforeOutputs, config),
-    embedTexts(afterOutputs, config),
-  ])
+  // Embed both sides together so every vector lives in the same space
+  // (for TF-IDF: the same vocabulary and IDF weights).
+  const { vectors, method } = await embedTexts([...beforeOutputs, ...afterOutputs], config)
+  const beforeEmbeddings = vectors.slice(0, beforeOutputs.length)
+  const afterEmbeddings = vectors.slice(beforeOutputs.length)
 
   if (beforeEmbeddings.length === 0 || afterEmbeddings.length === 0) {
     throw new Error('Could not get embeddings')
@@ -114,20 +114,18 @@ async function measureSemanticDistance(
     cosineSimilarity,
     driftScore,
     centroidDistance,
-    slices: [],
+    method,
   }
 }
 
 async function embedTexts(
   texts: string[],
   config: AILensConfig
-): Promise<EmbeddingVector[]> {
-  if (!config.analysisApiKey) return []
-
+): Promise<{ vectors: EmbeddingVector[]; method: SemanticDistance['method'] }> {
   // Truncate texts to avoid token limits
-  const truncated = texts.map(t => t.slice(0, 512))
+  const truncated = texts.map(t => t.slice(0, 2000))
 
-  if (config.analysisProvider === 'openai') {
+  if (config.analysisProvider === 'openai' && config.analysisApiKey) {
     try {
       const res = await fetch('https://api.openai.com/v1/embeddings', {
         method: 'POST',
@@ -140,25 +138,28 @@ async function embedTexts(
           input: truncated,
         }),
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json() as {
         data: Array<{ embedding: number[]; index: number }>
       }
-      return data.data.map((d, i) => ({ values: d.embedding, text: truncated[i] }))
+      const vectors = [...data.data]
+        .sort((a, b) => a.index - b.index)
+        .map(d => ({ values: d.embedding, text: truncated[d.index] }))
+      if (vectors.length === truncated.length) return { vectors, method: 'openai-embeddings' }
     } catch {
-      return []
+      // fall through to local TF-IDF
     }
   }
 
-  // Anthropic doesn't have a public embeddings API yet —
-  // fall back to a lightweight TF-IDF-style approach
-  return tfidfEmbeddings(truncated)
+  // No embeddings API for this provider — use local TF-IDF (no network, no key needed)
+  return { vectors: tfidfEmbeddings(truncated), method: 'tfidf' }
 }
 
 /**
  * Lightweight TF-IDF embeddings as fallback when no embedding API is available.
  * Not as good as neural embeddings but still captures vocabulary-level drift.
  */
-function tfidfEmbeddings(texts: string[]): EmbeddingVector[] {
+export function tfidfEmbeddings(texts: string[]): EmbeddingVector[] {
   const allWords = new Set<string>()
   const tokenized = texts.map(t =>
     t.toLowerCase()
@@ -183,7 +184,8 @@ function tfidfEmbeddings(texts: string[]): EmbeddingVector[] {
 
     const values = vocab.map(word => {
       const tfVal = (tf.get(word) ?? 0) / Math.max(words.length, 1)
-      const idfVal = Math.log(texts.length / Math.max(df.get(word) ?? 1, 1))
+      // Smoothed IDF: terms shared by every document keep a non-zero weight
+      const idfVal = Math.log((1 + texts.length) / (1 + (df.get(word) ?? 0))) + 1
       return tfVal * idfVal
     })
 
@@ -227,19 +229,22 @@ async function classifyOutputSlices(
   ].join('\n')
 
   try {
-    const text = await callAnalysisModel(classifyPrompt, config)
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as {
+    const text = await callAnalysisModel(classifyPrompt, config, { maxTokens: 1024 })
+    const parsed = parseJsonResponse(text) as {
       categories: string[]
       assignments: Array<{ index: number; category: string }>
     }
 
     const sliceMap = new Map<string, { before: number; after: number; examples: string[] }>()
 
-    parsed.categories.forEach(cat => {
+    const sampledBefore = allOutputs.filter(o => o.set === 'before').length
+    const sampledAfter = allOutputs.length - sampledBefore
+
+    ;(parsed.categories ?? []).forEach(cat => {
       sliceMap.set(cat, { before: 0, after: 0, examples: [] })
     })
 
-    parsed.assignments.forEach(({ index, category }) => {
+    ;(parsed.assignments ?? []).forEach(({ index, category }) => {
       const item = allOutputs[index]
       const slice = sliceMap.get(category)
       if (slice && item) {
@@ -250,8 +255,9 @@ async function classifyOutputSlices(
     })
 
     return Array.from(sliceMap.entries()).map(([category, data]) => {
-      const beforeRate = before.length > 0 ? data.before / before.length : 0
-      const afterRate = after.length > 0 ? data.after / after.length : 0
+      // Rates are relative to the outputs that were actually classified
+      const beforeRate = sampledBefore > 0 ? data.before / sampledBefore : 0
+      const afterRate = sampledAfter > 0 ? data.after / sampledAfter : 0
       return {
         category,
         beforeCount: data.before,
@@ -280,14 +286,25 @@ async function explainDrift(
   const avgLenAfter = Math.round(
     after.reduce((s, c) => s + c.output.length, 0) / after.length
   )
-  const lenDeltaPct = Math.round(((avgLenAfter - avgLenBefore) / avgLenBefore) * 100)
+  const lenDeltaPct = avgLenBefore > 0
+    ? Math.round(((avgLenAfter - avgLenBefore) / avgLenBefore) * 100)
+    : (avgLenAfter > 0 ? 100 : 0)
 
   const badRateBefore = (before.filter(c => c.feedback === 'bad').length / before.length * 100).toFixed(0)
   const badRateAfter = (after.filter(c => c.feedback === 'bad').length / after.length * 100).toFixed(0)
 
+  // Measured values are reported as-is — never taken from the LLM's reply
+  const measured: Partial<DiffResult['analysis']> = {
+    ...(distance ? { driftScore: distance.driftScore, cosineSimilarity: distance.cosineSimilarity } : {}),
+    ...(slices.length > 0
+      ? { slices: slices.map(({ category, beforeCount, afterCount, driftScore }) => ({ category, beforeCount, afterCount, driftScore })) }
+      : {}),
+  }
+
   const semanticBlock = distance
     ? [
         `## Semantic distance measurement`,
+        `Method: ${distance.method === 'tfidf' ? 'TF-IDF (vocabulary overlap, not meaning)' : 'neural embeddings'}`,
         `Cosine similarity: ${distance.cosineSimilarity.toFixed(3)} (1.0 = identical, 0.0 = completely different)`,
         `Drift score: ${distance.driftScore.toFixed(3)} (${distance.driftScore > 0.3 ? 'HIGH' : distance.driftScore > 0.1 ? 'MODERATE' : 'LOW'} behavioral change)`,
       ].join('\n')
@@ -341,21 +358,30 @@ async function explainDrift(
   ].filter(Boolean).join('\n')
 
   try {
-    const text = await callAnalysisModel(explainPrompt, config)
-    return JSON.parse(text.replace(/```json|```/g, '').trim()) as DiffResult['analysis']
-  } catch {
+    const text = await callAnalysisModel(explainPrompt, config, { maxTokens: 1500 })
+    const parsed = parseJsonResponse<Partial<DiffResult['analysis']>>(text)
+    return {
+      ...parsed,
+      behaviorChanges: Array.isArray(parsed.behaviorChanges) ? parsed.behaviorChanges : [],
+      regressions: Array.isArray(parsed.regressions) ? parsed.regressions : [],
+      improvements: Array.isArray(parsed.improvements) ? parsed.improvements : [],
+      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      ...measured,
+    }
+  } catch (e) {
     return {
       behaviorChanges: [],
       regressions: [],
       improvements: [],
-      summary: 'Could not analyze diff.',
+      summary: `Could not analyze diff: ${(e as Error).message.trim()}`,
+      ...measured,
     }
   }
 }
 
 // --- Math helpers ---
 
-function computeCentroid(vectors: number[][]): number[] {
+export function computeCentroid(vectors: number[][]): number[] {
   if (vectors.length === 0) return []
   const dim = vectors[0].length
   const centroid = new Array(dim).fill(0) as number[]
@@ -363,8 +389,9 @@ function computeCentroid(vectors: number[][]): number[] {
   return centroid.map(v => v / vectors.length)
 }
 
-function cosine(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0
+export function cosine(a: number[], b: number[]): number {
+  if (a.length !== b.length) throw new Error(`Vector dimension mismatch: ${a.length} vs ${b.length}`)
+  if (a.length === 0) return 0
   const dot = a.reduce((s, v, i) => s + v * (b[i] ?? 0), 0)
   const normA = Math.sqrt(a.reduce((s, v) => s + v * v, 0))
   const normB = Math.sqrt(b.reduce((s, v) => s + v * v, 0))
@@ -373,6 +400,6 @@ function cosine(a: number[], b: number[]): number {
 }
 
 function euclidean(a: number[], b: number[]): number {
-  if (a.length !== b.length) return 0
+  if (a.length !== b.length) throw new Error(`Vector dimension mismatch: ${a.length} vs ${b.length}`)
   return Math.sqrt(a.reduce((s, v, i) => s + Math.pow(v - (b[i] ?? 0), 2), 0))
 }
