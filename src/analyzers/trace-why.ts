@@ -1,5 +1,5 @@
 import { Trace, TraceStep, TraceWhyResult, AILensConfig } from '../types'
-import { callAnalysisModel } from './why'
+import { callAnalysisModel, parseJsonResponse } from './llm'
 
 /**
  * Analyze why a full pipeline trace failed.
@@ -110,8 +110,8 @@ async function scoreSteps(
   ].join('\n')
 
   try {
-    const text = await callAnalysisModel(prompt, config)
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as {
+    const text = await callAnalysisModel(prompt, config, { maxTokens: 2048 })
+    const parsed = parseJsonResponse(text) as {
       stepScores: Array<{
         name: string
         status: 'ok' | 'suspicious' | 'root-cause'
@@ -120,8 +120,10 @@ async function scoreSteps(
       }>
     }
 
-    return trace.steps.map(step => {
-      const score = parsed.stepScores.find(s => s.name === step.name)
+    const scores = parsed.stepScores ?? []
+    return trace.steps.map((step, i) => {
+      // Prefer positional match so repeated step names (agent loops) line up
+      const score = scores[i]?.name === step.name ? scores[i] : scores.find(s => s.name === step.name)
       return {
         step,
         status: score?.status ?? 'ok',
@@ -198,15 +200,15 @@ async function synthesizeTraceDiagnosis(
   ].filter(Boolean).join('\n')
 
   try {
-    const text = await callAnalysisModel(prompt, config)
-    return JSON.parse(text.replace(/```json|```/g, '').trim()) as {
+    const text = await callAnalysisModel(prompt, config, { maxTokens: 2048 })
+    return parseJsonResponse(text) as {
       diagnosis: string
       suggestedFix: string
       severity: 'low' | 'medium' | 'high'
     }
-  } catch {
+  } catch (e) {
     return {
-      diagnosis: 'Could not synthesize trace diagnosis.',
+      diagnosis: `Could not synthesize trace diagnosis: ${(e as Error).message.trim()}`,
       suggestedFix: '',
       severity: 'low',
     }

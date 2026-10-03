@@ -1,29 +1,28 @@
 import { LensCall, WhyResult, AILensConfig } from '../types'
 import { analyzeCausalChain } from './causal'
+import { hasAnalysisCredentials, MISSING_KEY_MESSAGE } from './llm'
 
+export { callAnalysisModel } from './llm'
+
+/** A call is "failing" if the user marked it bad, it errored, or a check did not pass. */
+export function isFailingCall(call: LensCall): boolean {
+  return call.feedback === 'bad' ||
+    call.output.startsWith('[ERROR]') ||
+    (call.checks?.some(ch => !ch.passed) ?? false)
+}
+
+/**
+ * Diagnose failing calls. Only calls with evidence of failure are analyzed —
+ * if nothing failed, returns [] rather than inventing problems in good outputs.
+ */
 export async function analyzeWhy(
   calls: LensCall[],
   config: AILensConfig
 ): Promise<WhyResult[]> {
-  const apiKey = config.analysisApiKey
-  if (!apiKey) {
-    throw new Error(
-      '\nNo API key found for analysis.\n\n' +
-      'Set one of these in your environment or .env file:\n' +
-      '  ANTHROPIC_API_KEY=sk-ant-...   (default provider)\n' +
-      '  OPENAI_API_KEY=sk-...          (set AILENS_PROVIDER=openai)\n' +
-      '  AILENS_API_KEY=...             (any provider)\n\n' +
-      'Or configure in code: lens({ analysisApiKey: "..." })'
-    )
-  }
+  const targets = calls.filter(isFailingCall).slice(0, 10)
+  if (targets.length === 0) return []
 
-  const badCalls = calls.filter(c =>
-    c.feedback === 'bad' ||
-    c.output.startsWith('[ERROR]') ||
-    (c.checks && c.checks.some(ch => !ch.passed))
-  )
-
-  const targets = badCalls.length > 0 ? badCalls.slice(0, 10) : calls.slice(0, 5)
+  if (!hasAnalysisCredentials(config)) throw new Error(MISSING_KEY_MESSAGE)
 
   // Run causal chain analysis in parallel (max 3 at once to avoid rate limits)
   const results: WhyResult[] = []
@@ -35,57 +34,4 @@ export async function analyzeWhy(
     results.push(...batchResults)
   }
   return results
-}
-
-export async function callAnalysisModel(
-  prompt: string,
-  config: AILensConfig
-): Promise<string> {
-  const apiKey = config.analysisApiKey!
-  const provider = config.analysisProvider ?? 'anthropic'
-
-  // Anthropic native API
-  if (provider === 'anthropic') {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: config.analysisModel ?? 'claude-sonnet-4-6',
-        max_tokens: 800,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    })
-    const data = await res.json() as { content: Array<{ text: string }> }
-    return data.content[0]?.text ?? ''
-  }
-
-  // OpenAI and any OpenAI-compatible provider (Groq, Ollama, Mistral, Together, Fireworks, etc.)
-  const baseURL = config.analysisBaseURL
-    ?? (provider === 'openai' ? 'https://api.openai.com/v1' : undefined)
-
-  if (!baseURL) {
-    throw new Error(
-      `analysisBaseURL is required when using provider "${provider}". ` +
-      `e.g. 'https://api.groq.com/openai/v1' or 'http://localhost:11434/v1'`
-    )
-  }
-
-  const res = await fetch(`${baseURL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.analysisModel ?? 'gpt-4o',
-      max_tokens: 800,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  })
-  const data = await res.json() as { choices: Array<{ message: { content: string } }> }
-  return data.choices[0]?.message?.content ?? ''
 }

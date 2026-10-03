@@ -5,8 +5,18 @@ import { Storage } from '../storage'
 import { analyzeWhy } from '../analyzers/why'
 import { analyzeDiff } from '../analyzers/diff'
 import { AILensConfig, LensCall } from '../types'
+import { resolveConfig } from '../config'
 
-const VERSION = '0.1.0'
+const VERSION = readVersion()
+
+function readVersion(): string {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8')) as { version?: string }
+    return pkg.version ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
 
 const HELP = `
 ailens v${VERSION} — AI developer toolkit
@@ -29,7 +39,7 @@ COMMANDS
   traces --show <id>   Show all steps in a trace
   traces why <id>      Diagnose why a trace failed
 
-  init                 Create .ailens/config.json with defaults
+  init [--force]       Create .ailens/config.json with defaults
 
 EXAMPLES
   npx ailens why
@@ -93,7 +103,7 @@ async function main() {
       await runTraces(args.slice(1), config)
       break
     case 'init':
-      await runInit(config)
+      await runInit(args.slice(1), config)
       break
     default:
       console.error(`Unknown command: ${command}\nRun 'npx ailens --help' for usage.`)
@@ -101,30 +111,9 @@ async function main() {
   }
 }
 
+/** Same resolution as the SDK: env vars > .ailens/config.json > defaults. */
 function loadConfig(): AILensConfig {
-  const logDir = process.env.AILENS_LOG_DIR ?? '.ailens'
-  const configFile = path.join(logDir, 'config.json')
-  let saved: Partial<AILensConfig> = {}
-
-  if (fs.existsSync(configFile)) {
-    try {
-      saved = JSON.parse(fs.readFileSync(configFile, 'utf-8'))
-    } catch {}
-  }
-
-  return {
-    logDir,
-    analysisProvider: (process.env.AILENS_PROVIDER as AILensConfig['analysisProvider'])
-      ?? saved.analysisProvider
-      ?? 'anthropic',
-    analysisModel: process.env.AILENS_MODEL ?? saved.analysisModel,
-    analysisApiKey: process.env.AILENS_API_KEY
-      ?? process.env.ANTHROPIC_API_KEY
-      ?? process.env.OPENAI_API_KEY
-      ?? saved.analysisApiKey,
-    analysisBaseURL: process.env.AILENS_BASE_URL ?? saved.analysisBaseURL,
-    ...saved,
-  }
+  return resolveConfig()
 }
 
 async function runWhy(args: string[], config: AILensConfig) {
@@ -161,7 +150,8 @@ async function runWhy(args: string[], config: AILensConfig) {
   const results = await analyzeWhy(calls, config)
 
   if (results.length === 0) {
-    console.log('✓ No issues found in recent calls.')
+    console.log('✓ No failing calls found (no bad feedback, errors, or failed checks).')
+    console.log('  Mark outputs with l.feedback(id, "bad") or add { check: [...] } rules to give `why` something to diagnose.')
     return
   }
 
@@ -172,10 +162,10 @@ async function runWhy(args: string[], config: AILensConfig) {
     console.log(`   Tag: ${result.call.tag ?? 'none'}\n`)
 
     console.log(`   📋 Prompt (first 120 chars):`)
-    console.log(`   "${result.call.prompt.slice(0, 120)}..."\n`)
+    console.log(`   "${truncate(result.call.prompt, 120)}"\n`)
 
     console.log(`   💬 Output (first 120 chars):`)
-    console.log(`   "${result.call.output.slice(0, 120)}..."\n`)
+    console.log(`   "${truncate(result.call.output, 120)}"\n`)
 
     console.log(`   🩺 Diagnosis:`)
     console.log(`   ${result.diagnosis}\n`)
@@ -195,7 +185,7 @@ async function runWhy(args: string[], config: AILensConfig) {
     if (result.causalChain && result.causalChain.rootCause) {
       const rc = result.causalChain.rootCause
       const conf = (result.causalChain.confidence * 100).toFixed(0)
-      console.log(`   🔗 Root cause span (${conf}% confidence):`)
+      console.log(`   🔗 Root cause span (${conf}% self-reported confidence):`)
       console.log(`   suspicion score: ${(rc.suspicionScore * 100).toFixed(0)}%`)
       console.log(`   "${rc.text.slice(0, 120)}"\n`)
     }
@@ -267,10 +257,10 @@ async function runDiff(args: string[], config: AILensConfig) {
   console.log()
 
   // Show semantic drift score if available
-  if (result.analysis.driftScore !== undefined) {
+  if (typeof result.analysis.driftScore === 'number') {
     const level = result.analysis.driftScore > 0.3 ? '🔴 HIGH' : result.analysis.driftScore > 0.1 ? '🟡 MODERATE' : '🟢 LOW'
     console.log(`  Semantic drift   ${level} (${(result.analysis.driftScore * 100).toFixed(1)}% behavioral change)`)
-    if (result.analysis.cosineSimilarity !== undefined) {
+    if (typeof result.analysis.cosineSimilarity === 'number') {
       console.log(`  Cosine sim       ${result.analysis.cosineSimilarity.toFixed(3)} (1.0 = identical outputs)`)
     }
     console.log()
@@ -423,14 +413,14 @@ async function runTraces(args: string[], config: AILensConfig) {
   for (const t of traces) {
     const status = t.success ? '✓' : '✗'
     const date = new Date(t.timestamp).toLocaleString()
-    console.log(`${t.id}  ${t.name.padEnd(24)}  ${String(t.steps.length).padEnd(5)}  ${String(t.totalLatencyMs)+'ms'.padEnd(8)} ${status}  ${date}`)
+    console.log(`${t.id}  ${t.name.padEnd(24)}  ${String(t.steps.length).padEnd(5)}  ${`${t.totalLatencyMs}ms`.padEnd(8)} ${status}  ${date}`)
   }
   console.log()
   console.log(`Run 'npx ailens traces --show <id>' to inspect a trace`)
   console.log(`Run 'npx ailens traces why <id>' to diagnose a failed trace`)
 }
 
-async function runInit(config: AILensConfig) {
+async function runInit(args: string[], config: AILensConfig) {
   const logDir = config.logDir ?? '.ailens'
   const storage = new Storage(config, 'cli')
 
@@ -440,6 +430,12 @@ async function runInit(config: AILensConfig) {
     analysisModel: 'claude-sonnet-4-6',
     maxLogs: 1000,
     verbose: false,
+  }
+
+  const configFile = path.join(storage.getLogDir(), 'config.json')
+  if (fs.existsSync(configFile) && !args.includes('--force')) {
+    console.log(`\n${logDir}/config.json already exists — leaving it unchanged (use --force to overwrite).`)
+    return
   }
 
   storage.saveConfig(defaultConfig)
@@ -461,6 +457,10 @@ async function runInit(config: AILensConfig) {
   console.log(`  3. Run your app, then:`)
   console.log(`     npx @techwarq/ailens why`)
   console.log(`     npx @techwarq/ailens diff --last`)
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}...` : text
 }
 
 function printInlineDiff(before: string, after: string) {

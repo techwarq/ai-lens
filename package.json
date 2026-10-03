@@ -6,19 +6,23 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/esm/index.js",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
+      "require": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "sideEffects": false,
   "bin": {
     "ailens": "dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc && tsc -p tsconfig.esm.json && node -e \"require('fs').writeFileSync('dist/esm/package.json', '{\\\"type\\\":\\\"module\\\"}')\"",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node scripts/build-esm.js",
     "dev": "tsx src/cli/index.ts",
-    "prepublishOnly": "npm run build"
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-tests.js",
+    "smoke": "node scripts/smoke.js",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run smoke"
   },
   "author": "Sonali Nayak",
   "repository": {
@@ -44,7 +48,8 @@
   "license": "MIT",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "devDependencies": {
     "@types/node": "^22.19.17",

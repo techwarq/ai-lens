@@ -15,6 +15,14 @@ export interface AILensConfig {
   maxLogs?: number
   /** Whether to log to console as well. Default: false */
   verbose?: boolean
+  /**
+   * What to do when an LLM-judged check cannot run (no API key, network/HTTP error,
+   * unparseable judge response).
+   *  - 'fail'   (default): the check counts as failed and `run()` throws AILensCheckError
+   *  - 'ignore': the check is recorded with `error` set but does not cause a throw
+   * A check that could not run is never reported as passed.
+   */
+  checkErrors?: 'fail' | 'ignore'
 }
 
 export interface LensCall {
@@ -58,6 +66,8 @@ export interface CheckResult {
   passed: boolean
   score?: number
   reason?: string
+  /** Set when the check could not be evaluated (judge unavailable, bad response, etc). */
+  error?: string
 }
 
 export interface DiffResult {
@@ -118,6 +128,10 @@ export interface RunOptions {
   check?: string[]
   /** Mark output as good/bad immediately */
   feedback?: 'good' | 'bad'
+  /** The model your app called (recorded on the log entry). Default: 'unknown' */
+  model?: string
+  /** The provider your app called, e.g. 'openai'. Default: 'unknown' */
+  provider?: string
 }
 
 // ── Trace types (for agents, pipelines, multi-step workflows) ──────────────
