@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ailens-evals"
+version = "0.2.0"
+description = "Evals for AI apps that make text, images, video or audio: is it getting better or worse with every change, why, and what it costs."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Sonali Nayak" }]
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["evals", "llm", "llm-as-a-judge", "tracing", "observability", "multimodal", "video", "image", "regression-testing"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/techwarq/ai-lens"
+Repository = "https://github.com/techwarq/ai-lens"
+Issues = "https://github.com/techwarq/ai-lens/issues"
+Changelog = "https://github.com/techwarq/ai-lens/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "basedpyright"]
+
+[project.scripts]
+lens = "ai_lens.cli:main"
+ailens = "ai_lens.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ai_lens"]
+
+[tool.hatch.build.targets.sdist]
+include = ["ai_lens", "tests", "examples", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.basedpyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"

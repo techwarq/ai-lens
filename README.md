@@ -1,578 +1,279 @@
-# @techwarq/ailens
+# ai-lens
 
-> Bring real software engineering to your AI app — debug, diff, type-check, and trace your LLM calls.
+**Evals for AI apps that make text, images, video or audio.** Add one decorator, say in plain English what you care about, and ai-lens tells you whether every change made your outputs better or worse, why, and what it costs.
 
-[![npm](https://img.shields.io/npm/v/@techwarq/ailens)](https://www.npmjs.com/package/@techwarq/ailens)
-![license](https://img.shields.io/badge/license-MIT-blue)
-![logs](https://img.shields.io/badge/logs-local--first-green)
-![llms](https://img.shields.io/badge/works%20with-any%20LLM-purple)
+[![PyPI](https://img.shields.io/pypi/v/ailens-evals)](https://pypi.org/project/ailens-evals/)
+[![CI](https://github.com/techwarq/ai-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/techwarq/ai-lens/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**any LLM · local-first · semantic checks · traces · session diff · zero config**
+```
+$ lens inspect
 
-[Install](#quick-start--2-lines) · [SDK](#sdk) · [CLI](#cli-commands) · [Traces](#ltracename-fn--multi-step-pipelines) · [Analysis model](#analysis-model--any-provider) · [Roadmap](#roadmap)
+What changed
+  a1f3c2d → b72c9e1  WORSE  -0.21 [-0.29, -0.13]  (12 matched inputs)
+      changed: commit "faster renderer", model gen-v3 → gen-v3-fast
+      biggest drop: judge: Is the motion smooth, with no warping? -0.33
+      rubric: Sharp subject -0.40
+      judge: "Frames 2 and 3 show the cat's legs melting into the board."
+      side by side: new better 1 · old better 9 · tie 2
+        "The old clip keeps the fur sharp; the new one smears it in motion."
+      cost/run $0.0310 → $0.0170
+
+Where the tokens go (b72c9e1)
+  call                       model              calls/run  in/call  out/call  cost/run  share
+  write_script (1 repeated)  claude-sonnet-5-5  2.0        2.9k     310       $0.0170   100%
+```
+
+## Why ai-lens
+
+- **One decorator.** `@lens.trace` records inputs, prompt, input assets, output, latency, errors, git commit, tokens and cost for every run and step.
+- **Any output.** Text, JSON, images, video (judged from sampled frames) and audio.
+- **Plain-English goals.** `lens track "are my videos getting better?"` writes the eval plan for you.
+- **Your best results become the bar.** Point ai-lens at examples you love. It learns a rubric from them and grades every new output against them.
+- **Verdicts you can trust.** Versions are compared on the same inputs, with 95% confidence intervals. Old and new outputs are compared side by side, in both orders, so position bias can't decide. When there's too little data, it says so.
+- **It names the cause.** Each regression is tied to the commit, model, parameter, prompt or asset that changed.
+- **It finds token waste.** The most expensive calls, repeated identical calls, and cost per run over time.
+- **It suggests fixes.** `lens suggest` reads your report, diff and code, and proposes changes with file and line numbers.
+- **Your model, your keys.** ai-lens ships no model and never sees an API key. All judging runs through a function you provide.
+
+## Install
 
 ```bash
-npm install @techwarq/ailens
+pip install ailens-evals
 ```
 
-Works with **any LLM** — OpenAI, Anthropic, Gemini, Groq, Ollama, Mistral, or any custom model.
+You need Python 3.10+. For image, video and audio outputs, also install [ffmpeg](https://ffmpeg.org/download.html) (`brew install ffmpeg` or `apt install ffmpeg`). The package itself has no dependencies.
 
----
+## Quickstart
 
-## The problem
+### 1. Give ai-lens your model
 
-You ship an AI feature. Something breaks. You have no idea why.
+ai-lens never calls a model on its own. Write one function in your project that takes a list of **parts** and returns the model's reply. Parts are text strings and JPEG image bytes, in order. Use a vision model if you generate images or video.
 
-- Which prompt caused it?
-- Did your last prompt change make things better or worse?
-- Are outputs actually following your rules?
+```python
+# lens_model.py
+import base64
+import anthropic
 
-Normal dev tools don't understand LLM outputs. `ailens` does.
+client = anthropic.Anthropic()
 
----
-
-## Quick start — 2 lines
-
-```ts
-import { lens } from '@techwarq/ailens'
-
-const l = lens()
-
-// Wrap any LLM call — works with OpenAI, Anthropic, Gemini, anything
-const output = await l.run(prompt, () => myModel.call(prompt))
+def judge(parts):
+    content = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(part).decode()}}
+        if isinstance(part, bytes) else {"type": "text", "text": part}
+        for part in parts
+    ]
+    return client.messages.create(model="claude-opus-5-5", max_tokens=16000, messages=[{"role": "user", "content": content}])
 ```
 
-That's it. Every call is silently logged locally to `.ailens/sessions/`.
+<details>
+<summary>OpenAI or any other model</summary>
 
----
-
-## SDK
-
-### `l.run(prompt, fn, options?)`
-
-Wrap any LLM call. Logs it and returns the output.
-
-```ts
-const output = await l.run(
-  'Summarize this article in one sentence.',
-  () => openai.chat.completions.create({ ... }).then(r => r.choices[0].message.content!),
-  { tag: 'summarizer', model: 'gpt-4o', provider: 'openai' }
-)
-```
-
-`model` / `provider` are optional and record which model *your app* called, so logs and diffs can tell models apart.
-
-### `l.runWithId(prompt, fn, options?)`
-
-Same as `run()` but returns `{ output, id }` so you can attach feedback.
-
-```ts
-const { output, id } = await l.runWithId(
-  'Summarize this article.',
-  () => myModel.call(prompt)
-)
-
-// Later — when user gives feedback:
-if (userThumbsUp)   l.feedback(id, 'good')
-if (userThumbsDown) l.feedback(id, 'bad')
-```
-
-`ailens why` will prioritize bad-marked calls when diagnosing problems.
-
-### `l.run()` with semantic checks
-
-Pass plain-english rules to enforce on every output. Fast local rules run instantly with no API call. Semantic rules use an LLM judge.
-
-```ts
-const output = await l.run(prompt, () => myModel.call(prompt), {
-  check: [
-    'under 50 words',                        // ⚡ local — instant
-    'not empty',                             // ⚡ local — instant
-    'valid json',                            // ⚡ local — instant
-    'does not contain "I cannot"',           // ⚡ local — instant
-    'is polite and professional in tone',    // 🤖 LLM judge
-    'does not mention competitor products',  // 🤖 LLM judge
-  ]
-})
-// throws AILensCheckError if any check fails
-```
-
-**Local checks** (no API needed). A rule runs locally only if the *whole* rule matches one of these forms (an optional `must` / `should` / `the output` prefix is allowed, and text matching is case-insensitive):
-- `under N words` / `over N words` (also `fewer than`, `more than`, `at most`, `at least`)
-- `under N chars` / `over N chars` (same comparisons)
-- `not empty`
-- `valid json`
-- `contains "text"`
-- `does not contain "text"` (also `must not contain "text"`)
-- `starts with "text"` / `does not start with "text"`
-- `ends with "text"` / `does not end with "text"`
-- `no urls`
-
-**Semantic checks** (LLM judge, uses your configured analysis model):
-- Any other plain-english rule, including compound ones like `"under 50 words unless the user asks for detail"`
-- The judge sees the prompt (and system prompt) as context, so rules like `"answers the question"` work
-
-**If a semantic check can't run** (no API key, network/HTTP error, bad judge response), it is **never** reported as passing. It gets `passed: false` and an `error` message. By default `run()` then throws `AILensCheckError`. If you'd rather not block on judge outages, set `checkErrors: 'ignore'`: the error is still logged on the call, but `run()` won't throw because of it.
-
-```ts
-const l = lens({ checkErrors: 'ignore' })  // default: 'fail'
-```
-
-Catching a failed check:
-
-```ts
-import { AILensCheckError } from '@techwarq/ailens'
-
-try {
-  const output = await l.run(prompt, fn, { check: ['under 50 words'] })
-} catch (e) {
-  if (e instanceof AILensCheckError) {
-    console.log(e.checks) // array of { rule, passed, score?, reason?, error? }
-  }
-}
-```
-
-### `l.trace()` — multi-step pipelines
-
-Trace full agent pipelines, RAG chains, or image/video workflows. Every step is logged individually and linked by trace ID.
-
-```ts
-const result = await l.trace('my-pipeline', async (t) => {
-  // LLM step
-  const refined = await t.run('refine-prompt', input, () => llm.refine(input))
-
-  // Image generation
-  const imageUrl = await t.image('gen-image', refined, () => dalle.generate(refined))
-
-  // Async video generation (submit + poll)
-  const videoUrl = await t.runAsync(
-    'gen-video',
-    refined,
-    () => runway.submit(imageUrl),        // returns job ID
-    (jobId) => runway.poll(jobId)         // returns URL or null if not ready
-  )
-
-  // Tool call
-  const data = await t.tool('fetch-data', { url }, () => fetch(url).then(r => r.json()))
-
-  // RAG retrieval
-  const context = await t.retrieve('search', query, () => vectorDB.search(query))
-
-  return videoUrl
-})
-```
-
-Each step type:
-
-| Method | Use for |
-|---|---|
-| `t.run(name, prompt, fn)` | LLM text generation (the prompt is recorded so `traces why` can see it; `t.run(name, fn)` also works) |
-| `t.image(name, prompt, fn)` | Image generation (DALL-E, Stability, etc.) |
-| `t.video(name, prompt, fn)` | Synchronous video gen |
-| `t.runAsync(name, prompt, submitFn, pollFn)` | Async video gen (Runway, Sora, Kling) |
-| `t.tool(name, args, fn)` | Tool / function calls |
-| `t.retrieve(name, query, fn)` | RAG / vector search |
-
----
-
-## CLI commands
-
-Set up first:
-```bash
-npx @techwarq/ailens init
-export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY, GROQ_API_KEY, etc.
-```
-
----
-
-### `npx @techwarq/ailens why`
-
-Diagnoses recent bad outputs using causal chain analysis — pinpoints exactly which part of your prompt caused the problem.
-
-```
-🔍 ailens why — analyzing 12 calls...
-
-🔴 Call 804af8e8 [high]
-   1/15/2025, 2:32:01 PM
-   Tag: summarizer
-
-   📋 Prompt (first 120 chars):
-   "Summarize the following article in one sentence..."
-
-   💬 Output (first 120 chars):
-   "This article discusses many important topics including climate change, economic policy..."
-
-   🩺 Diagnosis:
-   The prompt doesn't constrain the output format. The model interpreted
-   "one sentence" loosely and produced a vague opener instead of a real summary.
-   Without a concrete length or style constraint, the model defaults to the
-   path of least resistance.
-
-   ⚠  Prompt issues:
-   • "One sentence" is ambiguous — no word limit or style constraint
-   • No example of what a good summary looks like
-   • Missing format instruction (start with subject, not "This article...")
-
-   ✏  Suggested fix:
-   Add: "Return exactly one sentence under 20 words starting with the
-   main subject. Example: 'Scientists discovered X by doing Y, leading to Z.'"
-
-   🔗 Root cause span (82% confidence):
-   suspicion score: 85%
-   "Summarize the following article in one sentence."
-
-────────────────────────────────────────────────────────────
-```
-
-Severity levels:
-- `🔴 [high]` — clear prompt issue with high confidence fix
-- `🟡 [medium]` — suspicious but ambiguous
-- `🟢 [low]` — minor issue, may be acceptable
-
-Flags:
-```bash
-npx @techwarq/ailens why                     # analyze last 50 calls
-npx @techwarq/ailens why --session <id>      # analyze a specific session
-npx @techwarq/ailens why --tag summarizer    # only calls with this tag
-```
-
----
-
-### `npx @techwarq/ailens diff --last`
-
-Compares the last two sessions and explains what **behavior** changed — not just what text changed.
-
-```
-📊 ailens diff
-   Before: 3f2a1b9c (12 calls)
-   After:  7d4e2f1a (15 calls)
-
-Analyzing behavior changes...
-
-────────────────────────────────────────────────────────────
-SUMMARY
-────────────────────────────────────────────────────────────
-Tone shifted more formal after the system prompt rewrite.
-Responses are 40% longer on average. One regression: edge
-cases with short inputs now return empty strings instead of
-a fallback message.
-
-  Tone             more formal
-  Length           +40% longer
-  Semantic drift   🟡 MODERATE (18.3% behavioral change)
-  Cosine sim       0.817 (1.0 = identical outputs)
-
-~ Behavioral slices:
-   ↑ "direct answer": 4 → 9 (60% drift)
-   ↓ "hedged response": 6 → 2 (40% drift)
-
-✅ Improvements:
-   + Fewer hallucinations in product descriptions
-   + More consistent JSON structure
-
-❌ Regressions:
-   - Short inputs (<10 words) now return empty strings
-   - Occasional broken markdown in headers
-
-~ Behavior changes:
-   ~ Responses now begin with a direct answer instead of context-setting
-   ~ Refusal rate dropped from 8% to 2%
-
-────────────────────────────────────────────────────────────
-PROMPT DIFF
-────────────────────────────────────────────────────────────
-- You are a helpful assistant. Be concise.
-+ You are a professional assistant. Be formal and thorough.
-```
-
-Flags:
-```bash
-npx @techwarq/ailens diff --last               # compare last two sessions
-npx @techwarq/ailens diff <before> <after>     # compare specific sessions by ID
-```
-
----
-
-### `npx @techwarq/ailens sessions`
-
-Lists all recorded sessions.
-
-```
-Recorded sessions (5 total)
-
-ID              CALLS  DATE
-──────────────────────────────────────────────────
-7d4e2f1a-cc12   15     1/15/2025, 2:45 PM
-3f2a1b9c-aa09   12     1/15/2025, 11:20 AM (2 bad)
-1a2b3c4d-ff01   8      1/14/2025, 4:10 PM
-
-Run 'npx @techwarq/ailens sessions --show <id>' to inspect a session
-Run 'npx @techwarq/ailens why' to diagnose issues
-Run 'npx @techwarq/ailens diff --last' to compare last two sessions
-```
-
-Inspect a session:
-```bash
-npx @techwarq/ailens sessions --show 7d4e2f1a
-```
-
-```
-Session 7d4e2f1a — 15 calls
-
-👍 3f2a1b9c | 142ms | summarizer
-   Summarize the following article in one sentence...
-
-👎 804af8e8 | 98ms  | summarizer
-   Summarize the following article in one sentence...
-
-   defe565e | 210ms | classifier
-   Classify this support ticket into one of: billing...
-```
-
----
-
-### `npx @techwarq/ailens traces`
-
-Lists all recorded pipeline traces.
-
-```
-Recorded traces (3 total)
-
-ID         NAME                      STEPS  TIME     STATUS
-─────────────────────────────────────────────────────────────────
-b77b3cc6   image-pipeline            4      8432ms   ✓  1/15/2025, 2:26 PM
-7d1d4f23   rag-chatbot               3      1204ms   ✓  1/15/2025, 1:10 PM
-0ae20da7   video-gen-pipeline        5      62000ms  ✗  1/14/2025, 4:01 PM
-```
-
-Inspect a trace:
-```bash
-npx @techwarq/ailens traces --show b77b3cc6
-```
-
-```
-Trace: image-pipeline | 4 steps | 8432ms | ✓ success
-ID: b77b3cc6-...
-
-  ✓ refine-prompt       [llm       ]  312ms
-    In:  "a cat sitting on a rooftop at sunset"
-    Out: "a photorealistic tabby cat perched on a..."
-
-  ✓ gen-image           [image-gen ]  4200ms
-    In:  "a photorealistic tabby cat perched on a..."
-    Out: https://cdn.openai.com/images/...
-    URL: https://cdn.openai.com/images/...
-
-  ✓ describe-image      [llm       ]  890ms
-    In:  "Describe this image: https://..."
-    Out: "A realistic tabby cat sits on a..."
-
-  ✓ format-result       [llm       ]  180ms
-    In:  "Format this as JSON: ..."
-    Out: {"description": "...", "tags": [...]}
-```
-
-Diagnose a failed trace:
-```bash
-npx @techwarq/ailens traces why 0ae20da7
-```
-
-```
-🔍 ailens traces why — analyzing "video-gen-pipeline"...
-
-🔴 [high] video-gen-pipeline
-
-Step breakdown:
-  ✓ ok               refine-prompt [llm]
-  🟡 suspicious      gen-image [image-gen]
-  🔴 ROOT CAUSE      gen-video [video-gen]
-              Timed out after 300s — likely the image input was malformed
-
-🔗 Root cause: "gen-video" [video-gen]
-   Input:  "https://broken-url.example.com/image.png"
-   Output: ""
-
-🩺 Diagnosis:
-   The video generation step timed out because it received a broken image URL
-   from the previous step. The gen-image step returned a temporary signed URL
-   that expired before the video job consumed it. This is a cascade failure —
-   the root cause is the URL lifetime mismatch, not the video generator itself.
-
-✏  Suggested fix:
-   Download the image to a stable URL or base64 before passing it to
-   the video generator. Signed CDN URLs from DALL-E expire after ~1 hour.
-```
-
----
-
-## Works with any LLM
-
-Your own LLM calls are just wrapped functions — use any SDK, any model:
-
-```ts
-// OpenAI
-const output = await l.run(prompt, () =>
-  openai.chat.completions.create({ model: 'gpt-4o', messages: [{ role: 'user', content: prompt }] })
-    .then(r => r.choices[0].message.content!)
-)
-
-// Anthropic
-const output = await l.run(prompt, () =>
-  anthropic.messages.create({ model: 'claude-opus-4-7', messages: [{ role: 'user', content: prompt }] })
-    .then(r => r.content[0].text)
-)
-
-// Gemini
-const output = await l.run(prompt, () =>
-  genai.models.generateContent({ model: 'gemini-2.0-flash', contents: prompt })
-    .then(r => r.text())
-)
-
-// Any other model — just return a string
-const output = await l.run(prompt, () => myCustomModel.generate(prompt))
-```
-
----
-
-## Analysis model — any provider
-
-The analysis model (used by `why`, `diff`, checks) is separate from your app's LLM. Configure it to use any provider:
-
-```ts
-// Anthropic (default)
-const l = lens({ analysisProvider: 'anthropic', analysisApiKey: process.env.ANTHROPIC_API_KEY })
-
-// OpenAI
-const l = lens({ analysisProvider: 'openai', analysisApiKey: process.env.OPENAI_API_KEY })
-
-// Groq (fast + cheap)
-const l = lens({
-  analysisProvider: 'openai-compatible',
-  analysisBaseURL: 'https://api.groq.com/openai/v1',
-  analysisApiKey: process.env.GROQ_API_KEY,
-  analysisModel: 'llama-3.3-70b-versatile',
-})
-
-// Gemini
-const l = lens({
-  analysisProvider: 'openai-compatible',
-  analysisBaseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
-  analysisApiKey: process.env.GOOGLE_API_KEY,
-  analysisModel: 'gemini-2.0-flash',
-})
-
-// Ollama (local, free)
-const l = lens({
-  analysisProvider: 'openai-compatible',
-  analysisBaseURL: 'http://localhost:11434/v1',
-  analysisApiKey: 'ollama',
-  analysisModel: 'llama3.2',
-})
-```
-
-Or via environment variables:
-```bash
-# Anthropic (default)
-ANTHROPIC_API_KEY=sk-ant-...
-
+```python
 # OpenAI
-AILENS_PROVIDER=openai
-OPENAI_API_KEY=sk-...
+from openai import OpenAI
+client = OpenAI()
 
-# Any OpenAI-compatible provider
-AILENS_PROVIDER=openai-compatible
-AILENS_BASE_URL=https://api.groq.com/openai/v1
-AILENS_API_KEY=gsk_...
-AILENS_MODEL=llama-3.3-70b-versatile
+def judge(parts):
+    content = [
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(part).decode()}}
+        if isinstance(part, bytes) else {"type": "text", "text": part}
+        for part in parts
+    ]
+    return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": content}])
 ```
 
----
+```python
+# Anything else: return the reply as a string
+def judge(parts):
+    return my_model.generate(parts)
+```
 
-## Config file
+</details>
+
+Return a plain string, or return the Claude, OpenAI or Gemini response object as is. For Claude responses, and other models you've priced with `lens.configure(prices=...)`, the cost is counted as eval spend.
+
+### 2. Trace your app
+
+```python
+import ai_lens as lens
+
+lens.configure(model="lens_model:judge")
+
+@lens.trace
+def make_video(prompt: str, start_frame: str, seed: int = 42) -> str:
+    script = write_script(prompt)
+    lens.log(params={"seed": seed, "steps": 50}, model="gen-v3")
+    return render(script, start_frame)   # e.g. "out/video.mp4"
+
+@lens.step
+def write_script(prompt):
+    return client.messages.create(...)   # tokens and cost picked up automatically
+
+@lens.step(type="tool")
+def search_stock_footage(query): ...
+```
+
+Run your app as usual. Each call adds one line to `.ai-lens/runs.jsonl`.
+
+### 3. Say what you want to know
 
 ```bash
-npx @techwarq/ailens init
+lens track "are my videos getting better or worse with my changes?" --type video
 ```
 
-Creates `.ailens/config.json`:
-
-```json
-{
-  "logDir": ".ailens",
-  "analysisProvider": "anthropic",
-  "analysisModel": "claude-sonnet-4-6",
-  "maxLogs": 1000,
-  "verbose": false
-}
+```
+Tracking: are my videos getting better or worse with my changes?
+Output type: video
+  c1  success
+  c2  video_integrity
+  c3  judge: Does the motion stay smooth with no warping between frames?
+  c4  judge: Does the video follow the prompt and the start frame?
 ```
 
-Config priority: **code config > env vars > config.json** (the SDK and the CLI both follow this order).
+The plan is saved in `.ai-lens/plan.json`. Edit it if you want different checks.
 
-`init` won't overwrite an existing `config.json`. Pass `--force` to replace it.
+### 4. Change your code, run it again, and inspect
 
----
-
-## Logs stay local
-
-All logs go to `.ailens/sessions/` on your machine. The `.gitignore` inside `.ailens/` keeps session logs out of git by default.
-
-Your prompts and outputs **never leave your machine** unless you explicitly run `why`, `diff`, or use semantic checks — those send data to your configured analysis model.
-
-```
-.ailens/
-  config.json        ← commit this
-  .gitignore         ← keeps sessions/ out of git
-  sessions/          ← one file per session, gitignored
-  traces/            ← one file per trace, gitignored
+```bash
+lens inspect
 ```
 
----
+Only new runs are scored, so each run is paid for once. Then you get the versions table, what changed and why, rubric scores, side-by-side results, token hotspots and failures.
 
-## Full API reference
+### 5. Get fixes
 
-```ts
-import { lens, AILens, AILensCheckError } from '@techwarq/ailens'
-import type {
-  AILensConfig, LensCall, CheckResult,
-  RunOptions, DiffResult, WhyResult,
-  Trace, TraceStep, TraceWhyResult,
-} from '@techwarq/ailens'
-
-const l = lens(config?)               // create a lens instance
-l.run(prompt, fn, options?)           // wrap an LLM call
-l.runWithId(prompt, fn, options?)     // same, returns { output, id }
-l.runWithSystem(system, prompt, fn)   // track system prompt separately
-l.feedback(id, 'good' | 'bad')        // mark a call (any session); returns false if id not found
-l.trace(name, fn)                     // run a multi-step pipeline
-l.runMedia(prompt, fn, options?)      // single media generation call
-l.runAsync(prompt, submitFn, pollFn)  // async media generation (polling)
-l.getSession()                        // get all calls in current session
-l.getSessionId()                      // get current session ID
+```bash
+lens suggest
 ```
 
-`RunOptions`:
-```ts
-{
-  tag?: string                  // group calls by tag for filtering
-  meta?: Record<string, any>    // arbitrary metadata
-  check?: string[]              // semantic rules to enforce
-  feedback?: 'good' | 'bad'     // mark immediately on creation
-  model?: string                // the model your app called (logged)
-  provider?: string             // the provider your app called (logged)
-}
+```
+1. Revert gen-v3-fast for the motion pass  [quality]
+   app/render.py:42
+   Problem:  smoothness fell from 0.82 to 0.49 when the model changed
+   Change:   model="gen-v3" in render_motion(); keep gen-v3-fast for the thumbnail pass only
+   Expected: smoothness back to ~0.8, cost +$0.004/run
 ```
 
----
+## Tracing
 
-## Roadmap
+| You write | ai-lens records |
+|---|---|
+| `@lens.trace` | A run: inputs, output, latency, status, error with traceback, git commit, branch, uncommitted changes, source line |
+| `@lens.step`, `@lens.step(type="tool")` | A step inside the run, nested by parent. Steps that return an LLM response become `llm` steps with model, tokens and cost |
+| `with lens.trace("batch") as run:` / `with lens.step("render"):` | The same, for code that isn't a single function |
+| `lens.log(params={...})` | Settings that define a version, such as seed, steps or temperature |
+| `lens.log(prompt=full_prompt)` | The exact prompt sent. By default it's taken from a `prompt` argument |
+| `lens.log(assets=["style.png"])` | Extra input files. Media passed as arguments are picked up automatically |
+| `lens.log(usage=response)` | Token usage from a response you didn't return |
+| `lens.log(anything=value)` | Saved under `metadata` |
 
-- `ailens test` — auto-generate regression tests from good outputs
-- HTML report output
-- CI mode (`--ci` flag, exits non-zero on regressions)
-- VS Code extension
+**Guarantees:**
+- Tracing never changes what your function returns or raises.
+- If saving fails, you get a warning and your app keeps running.
+- Async functions and threads are supported.
+- Media outputs and input assets are copied and fingerprinted (sha256), so overwriting `out/video.mp4` never corrupts history.
 
----
+## Graders
+
+| Grader | What it does | Cost |
+|---|---|---|
+| `success` | Did the run finish without an error? | free |
+| `not_empty`, `valid_json` | Basic output checks | free |
+| `image_integrity`, `video_integrity`, `audio_integrity`, `audio_silence` | Does the file decode, have frames and a non-zero length, and is it not mostly silent? | free (ffmpeg) |
+| `judge` | Your model grades one specific check from 0 to 1, with a reason. It sees the prompt, input assets and the output (images directly, video as 4 frames in order) | 1 call |
+| `reference` | Your model compares the output with your best results, scored per rubric criterion | 1 call |
+| side by side | Old vs new output for the same inputs, asked twice with the order swapped. If the answers disagree, it's a tie | 2 calls |
+
+Audio content can't be judged by vision models, so audio uses the free checks.
+
+## Grade against your best results
+
+```python
+lens.configure(references="evals/best.jsonl")
+```
+
+```jsonl
+{"output": "best/cat_surfing.mp4", "inputs": {"prompt": "a cat surfing"}, "notes": "smooth motion, sharp fur"}
+{"output": "best/city.png", "notes": "this is the colour grade we want"}
+{"output": "Captions are under 12 words and name the subject."}
+```
+
+- **`output`** is a file or a text description of what good looks like.
+- **`inputs`** (optional) limits a reference to runs made from the same inputs.
+- **`notes`** (optional) say what makes it good.
+- Paths are relative to the `.jsonl` file. You can also pass a list of these dicts.
+
+`lens track` studies up to 4 references with your model and writes 3–6 specific criteria. Every new output is compared with its closest references, and the report tracks each criterion per version. If your references change, `lens inspect` tells you to run `lens track` again.
+
+## How verdicts are made
+
+1. **Versions.** Runs are grouped by git commit, uncommitted changes, model and `params`. Each group is a version.
+2. **Same inputs first.** If two versions share at least 3 inputs, they're compared only on those inputs. This way a version isn't judged worse just because it got harder prompts. Otherwise both versions are compared as a whole, and the report says "different inputs".
+3. **Confidence.** Each run's quality is the average of its check scores. The change is the mean difference, with a 95% bootstrap interval:
+   - **BETTER** or **WORSE** only when the whole interval is on one side of zero
+   - **NO CLEAR CHANGE** when it isn't
+   - **NOT ENOUGH DATA** below 3 runs
+4. **Side by side.** For up to 5 matched inputs per change, your model sees both outputs and picks the better one, twice, with the order swapped. Disagreements count as ties, which cancels position bias.
+5. **Locked judge.** The plan records which model function judged it. If you switch models, `lens inspect` warns that new scores aren't comparable with old ones.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `lens track "<goal>" [--type text\|json\|image\|video\|audio] [--model module:function]` | Creates the eval plan. The output type is detected from your runs if you leave it out |
+| `lens inspect [--per-version 20] [--pairs 5] [--no-eval] [--json]` | Scores new runs (at most `--per-version` per version), runs `--pairs` side-by-side comparisons per change, and prints the report |
+| `lens suggest` | Proposes file-and-line fixes for regressions, failures and token waste |
+
+`ailens` works as an alias for `lens`.
+
+## Configuration
+
+| What | How |
+|---|---|
+| Model for planning, judging and suggestions | `lens.configure(model="module:function")` or `lens track --model module:function` |
+| Reference results | `lens.configure(references="path.jsonl")`, or a list of dicts |
+| Data folder | `lens.configure(path=...)` or `AI_LENS_DIR` (default `.ai-lens/`) |
+| Turn tracing off | `lens.configure(enabled=False)` or `AI_LENS_DISABLED=1` |
+| Don't copy media | `lens.configure(copy_artifacts=False)` |
+| Prices for non-Claude models | `lens.configure(prices={"my-model": (input_per_million, output_per_million)})` |
+
+## What's stored
+
+```
+.ai-lens/
+  runs.jsonl        one line per traced run
+  plan.json         goal, checks, rubric, judge
+  evals.jsonl       one score per run and check
+  pairwise.jsonl    side-by-side results
+  config.json       where your model function lives (never a key)
+  references.json   your normalised reference set
+  artifacts/        outputs, by run id
+  assets/           input files, by content hash
+  references/       reference files, by content hash
+```
+
+Everything stays on your machine, in plain JSON you can read, diff or commit.
+
+## Limitations
+
+- Video is judged from 4 sampled frames, so judgements about audio and timing within a clip are limited.
+- Steps inside threads you start yourself aren't attached to the run. Async code works.
+- Judge scores are only as good as your model. Use your best vision model for media, and compare versions on the same inputs for a fair verdict.
+
+## Coming from `@techwarq/ailens` on npm?
+
+That TypeScript package is deprecated. ai-lens is now a Python package with multimodal evals, statistics and reference grading. Install it with `pip install ailens-evals`.
+
+## Development
+
+```bash
+git clone https://github.com/techwarq/ai-lens && cd ai-lens
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest -q
+.venv/bin/basedpyright ai_lens tests examples
+```
 
 ## License
 
-MIT — made by [Sonali Nayak](https://github.com/techwarq)
+MIT
