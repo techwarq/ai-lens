@@ -19,4 +19,4 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: pip install -e ".[dev]"
       - run: pytest -q
-      - run: basedpyright ai_lens tests examples
+      - run: basedpyright --pythonpath "$(which python)" ai_lens tests examples

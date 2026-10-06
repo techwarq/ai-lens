@@ -271,8 +271,10 @@ That TypeScript package is deprecated. ai-lens is now a Python package with mult
 git clone https://github.com/techwarq/ai-lens && cd ai-lens
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest -q
-.venv/bin/basedpyright ai_lens tests examples
+.venv/bin/basedpyright --pythonpath .venv/bin/python ai_lens tests examples
 ```
+
+To release, bump `version` in `pyproject.toml`, add a `CHANGELOG.md` entry, and push a tag like `v0.2.1`. GitHub Actions builds the package and publishes it to PyPI through trusted publishing, so no token is stored anywhere.
 
 ## License
 
