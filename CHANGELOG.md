@@ -2,7 +2,7 @@
 
 ## 0.2.0
 
-A rewrite in Python, published on PyPI as `ailens-evals`. It replaces the TypeScript package `@techwarq/ailens`, which is now deprecated.
+A rewrite in Python, published on PyPI as `ailens-evals`. It succeeds the earlier TypeScript package `@techwarq/ailens`.
 
 - **Tracing:** `@lens.trace`, `@lens.step` and `lens.log()` record inputs, prompt, input assets, output, latency, errors, git commit, tokens and cost for every run and step.
 - **Multimodal:** text, JSON, image, video and audio outputs. Media is copied and fingerprinted so history can't be overwritten.

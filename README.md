@@ -263,7 +263,7 @@ Everything stays on your machine, in plain JSON you can read, diff or commit.
 
 ## Coming from `@techwarq/ailens` on npm?
 
-That TypeScript package is deprecated. ai-lens is now a Python package with multimodal evals, statistics and reference grading. Install it with `pip install ailens-evals`.
+That was the earlier TypeScript version and it's no longer developed. ai-lens is now a Python package with multimodal evals, statistics and reference grading. Install it with `pip install ailens-evals`.
 
 ## Development
 
