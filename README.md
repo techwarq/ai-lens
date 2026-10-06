@@ -44,6 +44,16 @@ pip install ailens-evals
 
 You need Python 3.10+. For image, video and audio outputs, also install [ffmpeg](https://ffmpeg.org/download.html) (`brew install ffmpeg` or `apt install ffmpeg`). The package itself has no dependencies.
 
+## Set up with a coding agent
+
+Paste this into Claude Code, Cursor, Copilot or Codex, inside your project:
+
+```
+Set up ai-lens in this project by following https://raw.githubusercontent.com/techwarq/ai-lens/main/docs/setup-with-ai.md
+```
+
+The agent installs the package, traces your AI feature, wires in your own model, and checks that it works. Or follow the steps below yourself.
+
 ## Quickstart
 
 ### 1. Give ai-lens your model
