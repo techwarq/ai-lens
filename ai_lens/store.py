@@ -79,6 +79,14 @@ def load_pairs() -> list[dict[str, Any]]:
     return _read("pairwise.jsonl")
 
 
+def save_summaries(rows: list[dict[str, Any]]) -> None:
+    _append("summaries.jsonl", rows)
+
+
+def load_summaries() -> list[dict[str, Any]]:
+    return _read("summaries.jsonl")
+
+
 def save_plan(plan: dict[str, Any]) -> None:
     (data_dir() / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
 

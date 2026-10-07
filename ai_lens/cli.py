@@ -1,10 +1,12 @@
 import argparse
 import json
+import os
 import sys
 from collections import Counter
 from typing import Any
 
 from . import llm, pairwise, references, report, store, suggest
+from .explain import explain
 from .evaluate import evaluate
 from .llm import LensError
 from .media import OUTPUT_KINDS
@@ -49,6 +51,10 @@ def _warn(message: str) -> None:
     print(f"warning: {message}", file=sys.stderr)
 
 
+def _color() -> bool:
+    return sys.stdout.isatty() and "NO_COLOR" not in os.environ
+
+
 def _build(plan: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
     return report.build(plan, runs, store.load_evals(), store.load_pairs())
 
@@ -69,7 +75,8 @@ def inspect(args: argparse.Namespace) -> int:
             _warn(f"{error} (×{count})")
         print(file=sys.stderr)
     built = _build(plan, runs)
-    print(json.dumps(built, default=str, indent=2) if args.json else report.render(built))
+    explain(built, ask=not args.no_eval)
+    print(json.dumps(built, default=str, indent=2) if args.json else report.render(built, color=_color()))
     return 0
 
 

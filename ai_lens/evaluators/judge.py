@@ -37,22 +37,27 @@ def show_inputs(run: dict[str, Any]) -> Parts:
     return parts or ["No inputs recorded."]
 
 
+AUDIO = (
+    "The audio, which you can't hear, shown as two pictures: a waveform (loudness over time, left to right) "
+    "and a spectrogram (pitch over time, low notes at the bottom, brighter means louder). "
+    "Judge only what the pictures and measurements show."
+)
+
+
 def show_output(value: Any, kind: str | None) -> Parts | None:
-    if kind == "audio":
+    if kind not in ("image", "video", "audio"):
+        return [clip(as_text(value), 20_000)]
+    path = media.as_media_path(value)
+    pictures = media.pictures(path) if path else []
+    if path is None or not pictures:
         return None
-    if kind in ("image", "video"):
-        path = media.as_media_path(value)
-        pictures = media.pictures(path) if path else []
-        if not pictures:
-            return None
-        label = f"{len(pictures)} frames sampled evenly across the video, in order:" if kind == "video" else "The image:"
-        return [label, *pictures]
-    return [clip(as_text(value), 20_000)]
+    if kind == "audio":
+        return [AUDIO, *pictures, media.audio_facts(path)]
+    label = f"{len(pictures)} frames sampled evenly across the video, in order:" if kind == "video" else "The image:"
+    return [label, *pictures]
 
 
 def unshowable(kind: str | None) -> dict[str, Any]:
-    if kind == "audio":
-        return score(None, "audio can't be judged by the model; use the audio checks")
     return score(None, f"could not read the {kind} output; is ffmpeg installed?")
 
 

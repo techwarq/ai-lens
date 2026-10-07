@@ -1,5 +1,14 @@
-import functools
+import hashlib
 import subprocess
+from typing import NamedTuple
+
+
+class GitState(NamedTuple):
+    commit: str | None = None
+    branch: str | None = None
+    dirty: bool | None = None
+    edits: str | None = None
+    edited: list[str] = []
 
 
 def _git(args: list[str], timeout: float = 2) -> str | None:
@@ -18,13 +27,25 @@ def _git(args: list[str], timeout: float = 2) -> str | None:
     return result.stdout.strip()
 
 
-@functools.lru_cache(maxsize=1)
-def git_info() -> tuple[str | None, str | None, bool | None]:
-    commit = _git(["rev-parse", "HEAD"])
-    branch = _git(["branch", "--show-current"])
-    status = _git(["status", "--porcelain"])
-    dirty = None if status is None else bool(status)
-    return commit, branch, dirty
+def _edited(diff: str) -> list[str]:
+    return [line.rpartition(" b/")[2] for line in diff.splitlines() if line.startswith("diff --git a/")]
+
+
+def git_info() -> GitState:
+    status = _git(["status", "--porcelain=v2", "--branch"])
+    if status is None:
+        return GitState()
+    lines = status.splitlines()
+    headers = {key: value for line in lines if line.startswith("# ") for key, _, value in [line[2:].partition(" ")]}
+    commit = headers.get("branch.oid")
+    commit = None if commit in (None, "(initial)") else commit
+    branch = headers.get("branch.head")
+    branch = None if branch in (None, "(detached)") else branch
+    dirty = any(not line.startswith("#") for line in lines)
+    diff = _git(["diff", "HEAD", "--no-ext-diff"], timeout=5) if commit and dirty else None
+    if not diff:
+        return GitState(commit, branch, dirty)
+    return GitState(commit, branch, dirty, hashlib.sha256(diff.encode()).hexdigest()[:12], _edited(diff))
 
 
 def message(commit: str) -> str | None:

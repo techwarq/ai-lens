@@ -75,10 +75,10 @@ def _code(runs: list[Row], limit: int = 8, lines: int = 50) -> str:
 
 
 def _regression_diff(report: Row) -> str:
-    worse = [change for change in report["changes"] if change["stats"] and change["stats"]["verdict"] == "worse"]
+    worse = [change for change in report["changes"] if change["verdict"]["label"] in ("worse", "mixed")]
     if not worse:
         return ""
-    change = min(worse, key=lambda change: change["stats"]["delta"])
+    change = min(worse, key=lambda change: change["stats"]["delta"] if change["stats"] else 0.0)
     versions = {version["label"]: version for version in report["versions"]}
     before, after = versions[change["from"]], versions[change["to"]]
     if not before["commit"]:

@@ -28,3 +28,10 @@ def test_compare_prefers_matched_inputs():
 def test_results_are_reproducible():
     values = [0.1, -0.2, 0.3, 0.05]
     assert stats.paired(values) == stats.paired(values)
+
+
+def test_inputs_needed_grows_with_noise():
+    noisy = stats.paired([0.2, -0.2, 0.1, -0.1, 0.05, -0.05])
+    assert stats.inputs_needed(noisy) > 0
+    assert stats.inputs_needed(stats.paired([0.0, 0.0, 0.0])) == 0
+    assert stats.inputs_needed(None) is None

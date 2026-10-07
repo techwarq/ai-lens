@@ -9,19 +9,31 @@
 ```
 $ lens inspect
 
-What changed
-  a1f3c2d → b72c9e1  WORSE  -0.21 [-0.29, -0.13]  (12 matched inputs)
-      changed: commit "faster renderer", model gen-v3 → gen-v3-fast
-      biggest drop: judge: Is the motion smooth, with no warping? -0.33
-      rubric: Sharp subject -0.40
-      judge: "Frames 2 and 3 show the cat's legs melting into the board."
-      side by side: new better 1 · old better 9 · tie 2
-        "The old clip keeps the fur sharp; the new one smears it in motion."
-      cost/run $0.0310 → $0.0170
+are my videos getting better?
 
-Where the tokens go (b72c9e1)
-  call                       model              calls/run  in/call  out/call  cost/run  share
-  write_script (1 repeated)  claude-sonnet-5-5  2.0        2.9k     310       $0.0170   100%
+Latest change
+  WORSE  a1f3c2d → a1f3c2d +edit 9e04b1
+
+    The faster model breaks the motion: the cat's legs melt into the board mid-jump, and
+    the fur smears whenever it moves. The old version won 9 of 12 side-by-side comparisons.
+
+    Scores
+    ↓ c3  Is the motion smooth, with no warping?  0.81 → 0.48  -0.33 ±0.08
+           "Frames 2 and 3 show the cat's legs melting into the board."
+    ~ c4  Does the cat stay in frame?             0.70 → 0.77  +0.07 ±0.12  could be noise
+      rubric: Sharp subject -0.40
+
+    side by side  new better 1 · old better 9 · tie 2
+      "The old clip keeps the fur sharp; the new one smears it in motion."
+
+    changed  uncommitted edits to prompts/motion.py, model gen-v3 → gen-v3-fast
+    cost/run $0.0310 → $0.0170
+    12 matched inputs
+
+Versions
+  version               runs  pass  c3     c4    cost/run  tokens/run  time
+  a1f3c2d               12    100%  0.81   0.70  $0.0310   3.2k        41.0s
+  a1f3c2d +edit 9e04b1  12    100%  0.48↓  0.77  $0.0170   3.2k        28.5s
 ```
 
 ## Why ai-lens
@@ -191,11 +203,15 @@ lens suggest
 | `success` | Did the run finish without an error? | free |
 | `not_empty`, `valid_json` | Basic output checks | free |
 | `image_integrity`, `video_integrity`, `audio_integrity`, `audio_silence` | Does the file decode, have frames and a non-zero length, and is it not mostly silent? | free (ffmpeg) |
-| `judge` | Your model grades one specific check from 0 to 1, with a reason. It sees the prompt, input assets and the output (images directly, video as 4 frames in order) | 1 call |
+| `geval` | [G-Eval](https://arxiv.org/abs/2303.16634): when you run `lens track`, your model writes evaluation steps for one criterion. They're saved in `plan.json`, so every score uses the same steps. Each output is then graded by following those steps, scored 0 to 10 against fixed bands, and saved with notes for each step | 1 call |
+| `trajectory` | G-Eval over the whole run: every step and tool call, with its arguments, results and errors, in order. Checks whether tool use was correct. Added automatically when your app has `@lens.step(type="tool")` steps | 1 call |
+| `judge` | Your model answers one narrow question about the output, 0 to 1, with a reason | 1 call |
 | `reference` | Your model compares the output with your best results, scored per rubric criterion | 1 call |
 | side by side | Old vs new output for the same inputs, asked twice with the order swapped. If the answers disagree, it's a tie | 2 calls |
 
-Audio content can't be judged by vision models, so audio uses the free checks.
+Model graders see the prompt, input assets and the output. They see images directly and video as 4 frames in order. Audio is shown as a waveform and a spectrogram picture, plus measured length, loudness and silence.
+
+To tune a G-Eval check, edit its `steps` in `.ai-lens/plan.json`.
 
 ## Grade against your best results
 
@@ -218,14 +234,18 @@ lens.configure(references="evals/best.jsonl")
 
 ## How verdicts are made
 
-1. **Versions.** Runs are grouped by git commit, uncommitted changes, model and `params`. Each group is a version.
+1. **Versions.** Runs are grouped by git commit, model and `params`, plus a fingerprint of your uncommitted edits. Each set of edits you try, like a prompt change, is its own version, labelled e.g. `a1f3c2d +edit 9e04b1`. New untracked files, like your app's outputs, don't count as edits.
 2. **Same inputs first.** If two versions share at least 3 inputs, they're compared only on those inputs. This way a version isn't judged worse just because it got harder prompts. Otherwise both versions are compared as a whole, and the report says "different inputs".
-3. **Confidence.** Each run's quality is the average of its check scores. The change is the mean difference, with a 95% bootstrap interval:
-   - **BETTER** or **WORSE** only when the whole interval is on one side of zero
-   - **NO CLEAR CHANGE** when it isn't
+3. **Each check on its own.** Every scored check gets its own mean difference with a 95% bootstrap interval. A check moved only when the whole interval is on one side of zero. Pass/fail checks (success, valid JSON, file integrity) are gates: they are kept out of quality scores, and any drop in their pass rate is flagged.
+4. **The headline.**
+   - **WORSE** if a pass/fail check started failing
+   - otherwise, a lopsided side-by-side result (at least 80% one way) decides
+   - otherwise, **MIXED** if some checks went up and others down, **BETTER** or **WORSE** if they all moved one way
+   - **NO CLEAR CHANGE** when nothing moved beyond noise, with how many more matched inputs you'd need to see a 0.10 change
    - **NOT ENOUGH DATA** below 3 runs
-4. **Side by side.** For up to 5 matched inputs per change, your model sees both outputs and picks the better one, twice, with the order swapped. Disagreements count as ties, which cancels position bias.
-5. **Locked judge.** The plan records which model function judged it. If you switch models, `lens inspect` warns that new scores aren't comparable with old ones.
+5. **Side by side.** For up to 5 matched inputs per change, your model sees both outputs and picks the better one, twice, with the order swapped. Disagreements count as ties, which cancels position bias.
+6. **In plain words.** For a BETTER, WORSE or MIXED result, your model writes 2–3 sentences on what the outputs now do differently, from what the judge saw, shown above the scores. It's written once per result and cached, so it adds about one cheap call per change. Without a model, or with `--no-eval`, you get a plain summary built from the scores.
+7. **Locked judge.** The plan records which model function judged it. If you switch models, `lens inspect` warns that new scores aren't comparable with old ones.
 
 ## Commands
 
@@ -268,6 +288,8 @@ Everything stays on your machine, in plain JSON you can read, diff or commit.
 ## Limitations
 
 - Video is judged from 4 sampled frames, so judgements about audio and timing within a clip are limited.
+- Your model can't hear audio. It sees the audio's shape: silence, clipping, noise, rhythm and pitch. It can't tell what words are spoken.
+- G-Eval in the paper weights scores by token probabilities. ai-lens only gets text back from your model, so it uses the whole-number score.
 - Steps inside threads you start yourself aren't attached to the run. Async code works.
 - Judge scores are only as good as your model. Use your best vision model for media, and compare versions on the same inputs for a fair verdict.
 

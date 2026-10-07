@@ -76,3 +76,37 @@ def test_errors_from_the_users_model_are_reported(monkeypatch):
     monkeypatch.setattr(settings, "model", broken_model)
     _, errors = evaluate(PLAN, [run("r1")])
     assert errors == ["Your model raised TimeoutError: model timed out"]
+
+
+def test_geval_follows_the_plan_steps_and_scores_out_of_ten(fake_llm):
+    check = {"check": "Coherence", "steps": ["Read it.", "Check the flow."]}
+    result = EVALUATORS["geval"].run(run("r1"), check)
+    assert result["score"] == 0.7
+    assert result["notes"] == ["asked for a caption", "caption names the subject"]
+    assert "Evaluation steps:\n1. Read it.\n2. Check the flow." in fake_llm[0]["parts"]
+
+
+def test_geval_hears_audio_as_pictures(fake_llm, audio):
+    result = EVALUATORS["geval"].run({"output": str(audio), "output_type": "audio", "inputs": {}}, {"check": "Clean tone?"})
+    assert result["score"] == 0.7
+    assert len(fake_llm[0]["images"]) == 2
+    assert any(isinstance(part, str) and part.startswith("Measured: 2.0s long") for part in fake_llm[0]["parts"])
+
+
+def test_trajectory_shows_every_tool_call(fake_llm):
+    steps = [
+        {"id": "s1", "name": "plan", "type": "step", "inputs": {"q": "weather"}, "output": "use search"},
+        {"id": "s2", "name": "search", "type": "tool", "parent_id": "s1", "inputs": {"city": "Pune"}, "output": {"temp": 31}},
+        {"id": "s3", "name": "book", "type": "tool", "status": "error", "inputs": {}, "error": {"type": "KeyError", "message": "date"}},
+    ]
+    result = EVALUATORS["trajectory"].run({**run("r1"), "steps": steps}, {"check": "Right tools?"})
+    assert result["score"] == 0.7
+    shown = next(part for part in fake_llm[0]["parts"] if isinstance(part, str) and part.startswith("Every step"))
+    assert '  2. [tool] search(city="Pune") returned {"temp": 31}' in shown
+    assert "3. [tool] book() raised KeyError: date" in shown
+
+
+def test_trajectory_needs_recorded_steps(fake_llm):
+    result = EVALUATORS["trajectory"].run(run("r1"), {"check": "Right tools?"})
+    assert result["score"] is None
+    assert fake_llm == []

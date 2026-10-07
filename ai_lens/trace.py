@@ -202,7 +202,7 @@ def _collect_inputs(run: Run) -> None:
 def _finish(run: Run) -> None:
     try:
         run.ended_at = _now()
-        run.git_commit, run.git_branch, run.git_dirty = git_info()
+        run.git_commit, run.git_branch, run.git_dirty, run.git_edits, run.git_edited = git_info()
         records: list[Run | Step] = [run, *run.steps]
         run.input_tokens = _sum([record.input_tokens for record in records])
         run.output_tokens = _sum([record.output_tokens for record in records])

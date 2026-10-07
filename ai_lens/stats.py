@@ -1,9 +1,11 @@
+import math
 import random
 from statistics import mean
 from typing import Any
 
 MIN_RUNS = 3
 RESAMPLES = 2000
+EFFECT = 0.1
 
 
 def _interval(samples: list[float]) -> tuple[float, float]:
@@ -58,3 +60,11 @@ def compare(before: dict[str, float], after: dict[str, float], before_all: list[
     if before_all and after_all:
         return unpaired(before_all, after_all)
     return None
+
+
+def inputs_needed(result: dict[str, Any] | None, effect: float = EFFECT) -> int | None:
+    if result is None or result["n"] == 0:
+        return None
+    spread = (result["high"] - result["low"]) / 2
+    target = max(MIN_RUNS, math.ceil(result["n"] * (spread / effect) ** 2))
+    return max(0, target - result["n"])

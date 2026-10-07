@@ -74,6 +74,12 @@ def duration(info: dict[str, Any]) -> float:
         return 0.0
 
 
+def _render(path: Path, graph: str) -> bytes | None:
+    args = ["ffmpeg", "-v", "error", "-i", str(path), "-lavfi", f"{graph},format=yuvj420p", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-"]
+    result = _run(args)
+    return result.stdout if result and result.stdout else None
+
+
 def _jpeg(path: Path, width: int, seek: float | None = None) -> bytes | None:
     args = ["ffmpeg", "-v", "error"]
     if seek is not None:
@@ -96,9 +102,16 @@ def frames(path: Path, count: int = 4, width: int = 768) -> list[bytes]:
     return [shot for shot in shots if shot]
 
 
+def audio_pictures(path: Path) -> list[bytes]:
+    shots = [_render(path, "showwavespic=s=1024x256:split_channels=0"), _render(path, "showspectrumpic=s=1024x384:legend=0")]
+    return [shot for shot in shots if shot]
+
+
 def pictures(path: Path) -> list[bytes]:
     if kind_of(path) == "video":
         return frames(path)
+    if kind_of(path) == "audio":
+        return audio_pictures(path)
     jpeg = image_jpeg(path)
     return [jpeg] if jpeg else []
 
@@ -110,3 +123,29 @@ def silence_seconds(path: Path, threshold_db: int = -50, min_seconds: float = 0.
         return None
     log = result.stderr.decode(errors="replace")
     return sum(float(match) for match in re.findall(r"silence_duration: ([\d.]+)", log))
+
+
+def volume(path: Path) -> tuple[float, float] | None:
+    result = _run(["ffmpeg", "-v", "info", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"])
+    if result is None:
+        return None
+    log = result.stderr.decode(errors="replace")
+    mean, peak = re.search(r"mean_volume: ([-\d.]+) dB", log), re.search(r"max_volume: ([-\d.]+) dB", log)
+    return (float(mean.group(1)), float(peak.group(1))) if mean and peak else None
+
+
+def audio_facts(path: Path) -> str:
+    info = probe(path)
+    if info is None:
+        return "Could not measure the audio."
+    facts = [f"{duration(info):.1f}s long"]
+    sound = stream(info, "audio") or {}
+    if sound.get("sample_rate"):
+        facts.append(f"{sound['sample_rate']} Hz, {sound.get('channels', '?')} channel(s)")
+    levels = volume(path)
+    if levels:
+        facts.append(f"average loudness {levels[0]:.0f} dB, peak {levels[1]:.1f} dB")
+    silent = silence_seconds(path)
+    if silent is not None:
+        facts.append(f"{silent:.1f}s of silence")
+    return "Measured: " + ", ".join(facts) + "."

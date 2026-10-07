@@ -43,6 +43,8 @@ class Run:
     git_commit: str | None = None
     git_branch: str | None = None
     git_dirty: bool | None = None
+    git_edits: str | None = None
+    git_edited: list[str] = field(default_factory=list)
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost: float | None = None

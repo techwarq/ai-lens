@@ -17,7 +17,7 @@ def test_full_flow(fake_llm, capsys):
     assert main(["inspect"]) == 0
     output = capsys.readouterr().out
     assert "Versions" in output
-    assert "0.90" in output
+    assert "0.80" in output
 
     assert main(["suggest"]) == 0
     assert "Revert the model switch" in capsys.readouterr().out

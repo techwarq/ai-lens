@@ -2,9 +2,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from . import audio, basic, image, judge, reference, text, video
+from . import audio, basic, geval, image, judge, reference, text, video
 
 ALL = frozenset({"text", "json", "image", "video", "audio", "object", "none"})
+OUTPUTS = ALL - {"none"}
 
 
 @dataclass(frozen=True)
@@ -15,31 +16,46 @@ class Evaluator:
     run: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
     needs_check: bool = False
     plannable: bool = True
+    gate: bool = False
 
 
 EVALUATORS = {
     evaluator.name: evaluator
     for evaluator in (
-        Evaluator("success", ALL, "The run finished without raising an error.", basic.success),
+        Evaluator("success", ALL, "The run finished without raising an error.", basic.success, gate=True),
         Evaluator(
             "judge",
-            frozenset({"text", "json", "image", "video", "object"}),
-            "A model grades the output against one written check, 0 to 1. Sees images and sampled video frames.",
+            OUTPUTS,
+            "A model answers one narrow question about the output, 0 to 1.",
             judge.judge,
             needs_check=True,
         ),
         Evaluator(
+            "geval",
+            OUTPUTS,
+            "G-Eval: a model follows evaluation steps written for one criterion and scores the output 0 to 10. Best for broad qualities like coherence, faithfulness to the prompt or visual quality.",
+            geval.geval,
+            needs_check=True,
+        ),
+        Evaluator(
+            "trajectory",
+            ALL,
+            "G-Eval over the whole run: every step and tool call with its arguments and results. Use for how the app reached its output, like whether tool use was correct.",
+            geval.trajectory,
+            needs_check=True,
+        ),
+        Evaluator(
             "reference",
-            frozenset({"text", "json", "image", "video", "object"}),
+            OUTPUTS,
             "A model compares the output with your reference results using a rubric learned from them.",
             reference.compare,
             plannable=False,
         ),
-        Evaluator("not_empty", frozenset({"text", "json", "object"}), "The output is not empty.", text.not_empty),
-        Evaluator("valid_json", frozenset({"text", "json"}), "The output is valid JSON.", text.valid_json),
-        Evaluator("image_integrity", frozenset({"image"}), "The image decodes and has a sane size.", image.integrity),
-        Evaluator("video_integrity", frozenset({"video"}), "The video decodes, has frames and a non-zero duration.", video.integrity),
-        Evaluator("audio_integrity", frozenset({"audio"}), "The audio decodes and has a non-zero duration.", audio.integrity),
+        Evaluator("not_empty", frozenset({"text", "json", "object"}), "The output is not empty.", text.not_empty, gate=True),
+        Evaluator("valid_json", frozenset({"text", "json"}), "The output is valid JSON.", text.valid_json, gate=True),
+        Evaluator("image_integrity", frozenset({"image"}), "The image decodes and has a sane size.", image.integrity, gate=True),
+        Evaluator("video_integrity", frozenset({"video"}), "The video decodes, has frames and a non-zero duration.", video.integrity, gate=True),
+        Evaluator("audio_integrity", frozenset({"audio"}), "The audio decodes and has a non-zero duration.", audio.integrity, gate=True),
         Evaluator("audio_silence", frozenset({"audio"}), "Share of the clip that is not silence.", audio.silence),
     )
 }
