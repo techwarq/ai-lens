@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ailens-evals"
-version = "0.2.0"
+version = "0.3.0"
 description = "Evals for AI apps that make text, images, video or audio: is it getting better or worse with every change, why, and what it costs."
 readme = "README.md"
 license = "MIT"

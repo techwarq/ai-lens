@@ -32,6 +32,7 @@ def test_results_are_reproducible():
 
 def test_inputs_needed_grows_with_noise():
     noisy = stats.paired([0.2, -0.2, 0.1, -0.1, 0.05, -0.05])
-    assert stats.inputs_needed(noisy) > 0
+    needed = stats.inputs_needed(noisy)
+    assert needed is not None and needed > 0
     assert stats.inputs_needed(stats.paired([0.0, 0.0, 0.0])) == 0
     assert stats.inputs_needed(None) is None

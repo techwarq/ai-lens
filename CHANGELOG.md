@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - **G-Eval for every output type.** The new `geval` grader writes evaluation steps for a criterion once, locks them in `plan.json`, and grades each output against them from 0 to 10. It works on text, JSON, images, video and audio.
 - **Tool use checks.** The new `trajectory` grader runs G-Eval over every step and tool call in a run, to check the right tools were called with the right arguments and their results were used.
